@@ -553,3 +553,73 @@ test("harvest should be nullifiable per target", () => {
   assert.equal(target.hand.length, 0);
   assert.ok(state.discard.some((card) => card.id === "harvest-nullify-rsp"));
 });
+
+/**
+ * 验证【借刀杀人】可被【无懈可击】抵消。
+ */
+test("collateral should be canceled by nullify", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[2];
+  const weaponHolder = state.players[0];
+  const protector = state.players[1];
+  const slashTarget = state.players[3];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "collateral-nullify-1", kind: "collateral" }];
+  weaponHolder.equipment.weapon = { id: "holder-weapon-1", kind: "weapon_blade" };
+  weaponHolder.hand = [{ id: "holder-slash-1", kind: "slash" }];
+  protector.hand = [{ id: "holder-nullify-1", kind: "nullify" }];
+
+  const hpBefore = slashTarget.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "collateral-nullify-1",
+    targetId: weaponHolder.id,
+    secondaryTargetId: slashTarget.id
+  });
+
+  assert.equal(slashTarget.hp, hpBefore);
+  assert.equal(weaponHolder.hand.length, 1);
+  assert.ok(state.discard.some((card) => card.id === "holder-nullify-1"));
+  assert.ok(state.discard.some((card) => card.id === "collateral-nullify-1"));
+});
+
+/**
+ * 验证【借刀杀人】强制出的【杀】可被目标用【闪】响应。
+ */
+test("forced slash from collateral should be dodgeable", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const weaponHolder = state.players[1];
+  const slashTarget = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "collateral-dodge-1", kind: "collateral" }];
+  weaponHolder.equipment.weapon = { id: "holder-weapon-2", kind: "weapon_blade" };
+  weaponHolder.hand = [{ id: "holder-slash-2", kind: "slash" }];
+  slashTarget.hand = [{ id: "target-dodge-2", kind: "dodge" }];
+
+  const hpBefore = slashTarget.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "collateral-dodge-1",
+    targetId: weaponHolder.id,
+    secondaryTargetId: slashTarget.id
+  });
+
+  assert.equal(slashTarget.hp, hpBefore);
+  assert.ok(state.discard.some((card) => card.id === "holder-slash-2"));
+  assert.ok(state.discard.some((card) => card.id === "target-dodge-2"));
+});
