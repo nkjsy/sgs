@@ -256,6 +256,18 @@ export function getLegalActions(state: GameState): TurnAction[] {
       continue;
     }
 
+    if (card.kind === "ex_nihilo") {
+      for (const target of getAlivePlayersFrom(state, actor.id)) {
+        actions.push({
+          type: "play-card",
+          actorId: actor.id,
+          cardId: card.id,
+          targetId: target.id
+        });
+      }
+      continue;
+    }
+
     if (card.kind === "peach" && actor.hp < actor.maxHp) {
       actions.push({
         type: "play-card",
@@ -534,6 +546,26 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
   if (card.kind === "harvest") {
     pushEvent(state, "card", `${actor.name} 使用五谷丰登`);
     resolveHarvest(state, actor.id);
+    state.discard.push(card);
+    return;
+  }
+
+  if (card.kind === "ex_nihilo") {
+    const target = action.targetId ? getPlayerById(state, action.targetId) : null;
+    if (!target || !target.alive) {
+      actor.hand.push(card);
+      return;
+    }
+
+    pushEvent(state, "card", `${actor.name} 对 ${target.name} 使用无中生有`);
+    const negated = resolveNullifyChain(state, actor.id, target.id, card.kind);
+    if (negated) {
+      pushEvent(state, "nullify", `${target.name} 的无中生有效果被无懈可击抵消`);
+      state.discard.push(card);
+      return;
+    }
+
+    drawCards(state, target.id, 2);
     state.discard.push(card);
     return;
   }
@@ -1012,7 +1044,10 @@ function resolveNullifyChain(
   state: GameState,
   sourceId: string,
   targetId: string,
-  trickKind: Extract<CardKind, "dismantle" | "snatch" | "duel" | "barbarian" | "archery" | "taoyuan" | "harvest" | "collateral">
+  trickKind: Extract<
+    CardKind,
+    "dismantle" | "snatch" | "duel" | "barbarian" | "archery" | "taoyuan" | "harvest" | "ex_nihilo" | "collateral"
+  >
 ): boolean {
   let negated = false;
 
@@ -1061,7 +1096,10 @@ function shouldPlayNullify(
   responder: PlayerState,
   sourceId: string,
   targetId: string,
-  trickKind: Extract<CardKind, "dismantle" | "snatch" | "duel" | "barbarian" | "archery" | "taoyuan" | "harvest" | "collateral">,
+  trickKind: Extract<
+    CardKind,
+    "dismantle" | "snatch" | "duel" | "barbarian" | "archery" | "taoyuan" | "harvest" | "ex_nihilo" | "collateral"
+  >,
   currentlyNegated: boolean
 ): boolean {
   if (!responder.hand.some((card) => card.kind === "nullify")) {

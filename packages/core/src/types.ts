@@ -23,6 +23,7 @@ export type CardKind =
   | "archery"
   | "taoyuan"
   | "harvest"
+  | "ex_nihilo"
   | "collateral"
   | "weapon_blade"
   | "horse_plus"

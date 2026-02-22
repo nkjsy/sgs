@@ -7,7 +7,7 @@ import { getLegalActions } from "./engine";
  * 策略优先级：
  * 1) 先保命（如果可用桃并受伤则优先使用）。
  * 2) 再尝试功能锦囊（顺手牵羊、过河拆桥、决斗、借刀杀人、乐不思蜀）。
- * 3) 再尝试增益锦囊（桃园结义、五谷丰登）。
+ * 3) 再尝试增益锦囊（桃园结义、五谷丰登、无中生有）。
  * 4) 再尝试群体锦囊（南蛮入侵、万箭齐发）。
  * 4) 再尝试进攻（使用杀攻击体力最低目标）。
  * 4) 无更优动作时结束出牌阶段。
@@ -107,6 +107,10 @@ export function chooseAiAction(context: AiContext): TurnAction {
 
     if (card.kind === "harvest") {
       return true;
+    }
+
+    if (card.kind === "ex_nihilo") {
+      return action.targetId === context.actor.id;
     }
 
     return false;

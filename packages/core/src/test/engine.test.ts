@@ -280,6 +280,10 @@ test("indulgence should skip play phase on non-heart judgment", () => {
   const state = createInitialGame(42);
   const target = state.players[1];
 
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
   state.currentPlayerId = target.id;
   state.phase = "judge";
   target.judgmentZone.delayedTricks = [{ id: "indulgence-1", kind: "indulgence" }];
@@ -320,6 +324,10 @@ test("lightning should transfer on non-trigger judgment", () => {
   const state = createInitialGame(42);
   const target = state.players[0];
   const next = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
 
   state.currentPlayerId = target.id;
   state.phase = "judge";
@@ -622,4 +630,68 @@ test("forced slash from collateral should be dodgeable", () => {
   assert.equal(slashTarget.hp, hpBefore);
   assert.ok(state.discard.some((card) => card.id === "holder-slash-2"));
   assert.ok(state.discard.some((card) => card.id === "target-dodge-2"));
+});
+
+/**
+ * 验证【无中生有】生效时目标摸 2 张牌。
+ */
+test("ex nihilo should let target draw 2 cards", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "ex-nihilo-1", kind: "ex_nihilo" }];
+  state.deck = [
+    { id: "draw-a", kind: "slash" },
+    { id: "draw-b", kind: "dodge" }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "ex-nihilo-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hand.length, 2);
+  assert.ok(state.discard.some((card) => card.id === "ex-nihilo-1"));
+});
+
+/**
+ * 验证【无中生有】可被【无懈可击】抵消。
+ */
+test("ex nihilo should be canceled by nullify", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[2];
+  const target = state.players[0];
+  const protector = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "ex-nihilo-2", kind: "ex_nihilo" }];
+  protector.hand = [{ id: "nullify-ex-1", kind: "nullify" }];
+  state.deck = [
+    { id: "draw-c", kind: "slash" },
+    { id: "draw-d", kind: "dodge" }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "ex-nihilo-2",
+    targetId: target.id
+  });
+
+  assert.equal(target.hand.length, 0);
+  assert.ok(state.discard.some((card) => card.id === "nullify-ex-1"));
 });

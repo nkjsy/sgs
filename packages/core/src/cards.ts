@@ -1,4 +1,5 @@
 import { Card, CardKind } from "./types";
+import { isCardKindInCurrentScope } from "./standard-scope";
 
 /**
  * 根据预设分布生成一副用于 MVP 测试的卡牌堆。
@@ -15,6 +16,7 @@ import { Card, CardKind } from "./types";
  * - 万箭齐发 4
  * - 桃园结义 4
  * - 五谷丰登 4
+ * - 无中生有 4
  * - 借刀杀人 4
  * - 武器（攻击范围+1） 4
  * - +1坐骑 4
@@ -40,6 +42,7 @@ export function createDeck(totalPerKind = 24): Card[] {
       { kind: "archery", count: 4 },
       { kind: "taoyuan", count: 4 },
       { kind: "harvest", count: 4 },
+      { kind: "ex_nihilo", count: 4 },
       { kind: "collateral", count: 4 },
       { kind: "weapon_blade", count: 4 },
       { kind: "horse_plus", count: 4 },
@@ -59,6 +62,7 @@ export function createDeck(totalPerKind = 24): Card[] {
       { kind: "archery", count: totalPerKind },
       { kind: "taoyuan", count: totalPerKind },
       { kind: "harvest", count: totalPerKind },
+      { kind: "ex_nihilo", count: totalPerKind },
       { kind: "collateral", count: totalPerKind },
       { kind: "weapon_blade", count: totalPerKind },
       { kind: "horse_plus", count: totalPerKind },
@@ -66,6 +70,13 @@ export function createDeck(totalPerKind = 24): Card[] {
       { kind: "indulgence", count: totalPerKind },
       { kind: "lightning", count: totalPerKind }
     ];
+
+  for (const entry of distribution) {
+    if (!isCardKindInCurrentScope(entry.kind)) {
+      throw new Error(`当前范围仅支持标准版身份场，检测到超出范围牌种: ${entry.kind}`);
+    }
+  }
+
   let seq = 1;
 
   for (const entry of distribution) {
