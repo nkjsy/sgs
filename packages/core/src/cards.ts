@@ -13,6 +13,9 @@ import { Card, CardKind } from "./types";
  * - 决斗 6
  * - 南蛮入侵 4
  * - 万箭齐发 4
+ * - 桃园结义 4
+ * - 五谷丰登 4
+ * - 借刀杀人 4
  * - 武器（攻击范围+1） 4
  * - +1坐骑 4
  * - -1坐骑 4
@@ -35,6 +38,9 @@ export function createDeck(totalPerKind = 24): Card[] {
       { kind: "duel", count: 6 },
       { kind: "barbarian", count: 4 },
       { kind: "archery", count: 4 },
+      { kind: "taoyuan", count: 4 },
+      { kind: "harvest", count: 4 },
+      { kind: "collateral", count: 4 },
       { kind: "weapon_blade", count: 4 },
       { kind: "horse_plus", count: 4 },
       { kind: "horse_minus", count: 4 },
@@ -51,6 +57,9 @@ export function createDeck(totalPerKind = 24): Card[] {
       { kind: "duel", count: totalPerKind },
       { kind: "barbarian", count: totalPerKind },
       { kind: "archery", count: totalPerKind },
+      { kind: "taoyuan", count: totalPerKind },
+      { kind: "harvest", count: totalPerKind },
+      { kind: "collateral", count: totalPerKind },
       { kind: "weapon_blade", count: totalPerKind },
       { kind: "horse_plus", count: totalPerKind },
       { kind: "horse_minus", count: totalPerKind },

@@ -185,6 +185,23 @@ export function getLegalActions(state: GameState): TurnAction[] {
       continue;
     }
 
+    if (card.kind === "collateral") {
+      const firstTargets = getAliveOpponents(state, actor.id).filter((candidate) => candidate.equipment.weapon !== null);
+      for (const firstTarget of firstTargets) {
+        const secondTargets = getAliveOpponents(state, firstTarget.id).filter((candidate) => isInAttackRange(state, firstTarget.id, candidate.id));
+        for (const secondTarget of secondTargets) {
+          actions.push({
+            type: "play-card",
+            actorId: actor.id,
+            cardId: card.id,
+            targetId: firstTarget.id,
+            secondaryTargetId: secondTarget.id
+          });
+        }
+      }
+      continue;
+    }
+
     if (isEquipmentKind(card.kind)) {
       actions.push({
         type: "play-card",
@@ -227,6 +244,15 @@ export function getLegalActions(state: GameState): TurnAction[] {
           cardId: card.id
         });
       }
+      continue;
+    }
+
+    if (card.kind === "taoyuan" || card.kind === "harvest") {
+      actions.push({
+        type: "play-card",
+        actorId: actor.id,
+        cardId: card.id
+      });
       continue;
     }
 
@@ -450,6 +476,68 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
     return;
   }
 
+  if (card.kind === "collateral") {
+    const weaponHolder = action.targetId ? getPlayerById(state, action.targetId) : null;
+    const slashTarget = action.secondaryTargetId ? getPlayerById(state, action.secondaryTargetId) : null;
+    if (
+      !weaponHolder ||
+      !weaponHolder.alive ||
+      weaponHolder.id === actor.id ||
+      !weaponHolder.equipment.weapon ||
+      !slashTarget ||
+      !slashTarget.alive ||
+      slashTarget.id === weaponHolder.id ||
+      !isInAttackRange(state, weaponHolder.id, slashTarget.id)
+    ) {
+      actor.hand.push(card);
+      return;
+    }
+
+    pushEvent(state, "card", `${actor.name} 对 ${weaponHolder.name} 使用借刀杀人，指定 ${slashTarget.name} 为目标`);
+    const negated = resolveNullifyChain(state, actor.id, weaponHolder.id, card.kind);
+    if (negated) {
+      pushEvent(state, "nullify", "借刀杀人 被无懈可击抵消");
+      state.discard.push(card);
+      return;
+    }
+
+    const slash = consumeFirstCardByKind(weaponHolder, "slash");
+    if (slash) {
+      state.discard.push(slash);
+      pushEvent(state, "response", `${weaponHolder.name} 被迫对 ${slashTarget.name} 使用杀`);
+
+      const dodge = consumeFirstCardByKind(slashTarget, "dodge");
+      if (dodge) {
+        state.discard.push(dodge);
+        pushEvent(state, "response", `${slashTarget.name} 打出闪，抵消借刀杀人的杀`);
+      } else {
+        dealDamage(state, weaponHolder.id, slashTarget.id, 1);
+      }
+    } else if (weaponHolder.equipment.weapon) {
+      const takenWeapon = weaponHolder.equipment.weapon;
+      weaponHolder.equipment.weapon = null;
+      actor.hand.push(takenWeapon);
+      pushEvent(state, "trick", `${weaponHolder.name} 未打出杀，武器被 ${actor.name} 获得`);
+    }
+
+    state.discard.push(card);
+    return;
+  }
+
+  if (card.kind === "taoyuan") {
+    pushEvent(state, "card", `${actor.name} 使用桃园结义`);
+    resolveTaoyuan(state, actor.id);
+    state.discard.push(card);
+    return;
+  }
+
+  if (card.kind === "harvest") {
+    pushEvent(state, "card", `${actor.name} 使用五谷丰登`);
+    resolveHarvest(state, actor.id);
+    state.discard.push(card);
+    return;
+  }
+
   if (isEquipmentKind(card.kind)) {
     equipCard(state, actor, card);
     return;
@@ -553,6 +641,152 @@ function resolveDuel(state: GameState, sourceId: string, targetId: string): void
     current = nextCurrent;
     opponent = nextOpponent;
   }
+}
+
+/**
+ * 结算【桃园结义】效果。
+ *
+ * 所有存活角色各回复 1 点体力（不超过上限）。
+ *
+ * @param state 当前游戏状态。
+ * @param sourceId 使用者编号。
+ */
+function resolveTaoyuan(state: GameState, sourceId: string): void {
+  const participants = getAlivePlayersFrom(state, sourceId);
+  for (const participant of participants) {
+    const negated = resolveNullifyChain(state, sourceId, participant.id, "taoyuan");
+    if (negated) {
+      pushEvent(state, "nullify", `${participant.name} 的桃园结义效果被无懈可击抵消`);
+      continue;
+    }
+
+    if (participant.hp >= participant.maxHp) {
+      continue;
+    }
+
+    participant.hp += 1;
+    pushEvent(state, "trick", `${participant.name} 因桃园结义回复 1 点体力`);
+  }
+}
+
+/**
+ * 结算【五谷丰登】效果。
+ *
+ * 亮出等同于存活角色数量的牌，并由角色按座次依次各获得其中 1 张。
+ *
+ * @param state 当前游戏状态。
+ * @param sourceId 使用者编号。
+ */
+function resolveHarvest(state: GameState, sourceId: string): void {
+  const participants = getAlivePlayersFrom(state, sourceId);
+  const revealed: Card[] = [];
+
+  for (let index = 0; index < participants.length; index += 1) {
+    if (state.deck.length === 0) {
+      refillDeckFromDiscard(state);
+    }
+
+    const card = state.deck.shift();
+    if (!card) {
+      break;
+    }
+
+    revealed.push(card);
+  }
+
+  if (revealed.length === 0) {
+    pushEvent(state, "trick", "五谷丰登未能亮出有效牌");
+    return;
+  }
+
+  pushEvent(state, "trick", `五谷丰登亮出：${revealed.map((card) => card.id).join("、")}`);
+
+  for (const participant of participants) {
+    if (revealed.length === 0) {
+      break;
+    }
+
+    const negated = resolveNullifyChain(state, sourceId, participant.id, "harvest");
+    if (negated) {
+      pushEvent(state, "nullify", `${participant.name} 的五谷丰登效果被无懈可击抵消`);
+      continue;
+    }
+
+    const selectedIndex = chooseHarvestCardIndex(participant, revealed);
+    const [selected] = revealed.splice(selectedIndex, 1);
+    participant.hand.push(selected);
+    pushEvent(state, "trick", `${participant.name} 从五谷丰登中获得 ${selected.id}`);
+  }
+
+  if (revealed.length > 0) {
+    state.discard.push(...revealed);
+    pushEvent(state, "trick", `五谷丰登剩余牌进入弃牌堆：${revealed.map((card) => card.id).join("、")}`);
+  }
+}
+
+/**
+ * 为五谷丰登选择最优牌索引。
+ *
+ * @param player 选牌角色。
+ * @param options 当前可选牌。
+ * @returns 最优牌在 options 中的索引。
+ */
+function chooseHarvestCardIndex(player: PlayerState, options: Card[]): number {
+  let bestIndex = 0;
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  for (let index = 0; index < options.length; index += 1) {
+    const score = evaluateHarvestCard(player, options[index]);
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = index;
+    }
+  }
+
+  return bestIndex;
+}
+
+/**
+ * 评估单张五谷候选牌价值。
+ *
+ * @param player 选牌角色。
+ * @param card 候选牌。
+ * @returns 分值，越高越优先。
+ */
+function evaluateHarvestCard(player: PlayerState, card: Card): number {
+  if (card.kind === "peach") {
+    return player.hp < player.maxHp ? 100 : 55;
+  }
+
+  if (card.kind === "nullify") {
+    return 90;
+  }
+
+  if (card.kind === "slash") {
+    return 75;
+  }
+
+  if (card.kind === "dodge") {
+    return 70;
+  }
+
+  if (card.kind === "duel" || card.kind === "dismantle" || card.kind === "snatch") {
+    return 65;
+  }
+
+  if (card.kind === "barbarian" || card.kind === "archery" || card.kind === "taoyuan" || card.kind === "harvest") {
+    return 60;
+  }
+
+  if (card.kind === "weapon_blade" || card.kind === "horse_plus" || card.kind === "horse_minus") {
+    return 58;
+  }
+
+  if (card.kind === "indulgence" || card.kind === "lightning") {
+    return 56;
+  }
+
+  return 50;
 }
 
 /**
@@ -778,7 +1012,7 @@ function resolveNullifyChain(
   state: GameState,
   sourceId: string,
   targetId: string,
-  trickKind: Extract<CardKind, "dismantle" | "snatch" | "duel" | "barbarian" | "archery">
+  trickKind: Extract<CardKind, "dismantle" | "snatch" | "duel" | "barbarian" | "archery" | "taoyuan" | "harvest" | "collateral">
 ): boolean {
   let negated = false;
 
@@ -827,7 +1061,7 @@ function shouldPlayNullify(
   responder: PlayerState,
   sourceId: string,
   targetId: string,
-  trickKind: Extract<CardKind, "dismantle" | "snatch" | "duel" | "barbarian" | "archery">,
+  trickKind: Extract<CardKind, "dismantle" | "snatch" | "duel" | "barbarian" | "archery" | "taoyuan" | "harvest" | "collateral">,
   currentlyNegated: boolean
 ): boolean {
   if (!responder.hand.some((card) => card.kind === "nullify")) {

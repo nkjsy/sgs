@@ -21,6 +21,9 @@ export type CardKind =
   | "duel"
   | "barbarian"
   | "archery"
+  | "taoyuan"
+  | "harvest"
+  | "collateral"
   | "weapon_blade"
   | "horse_plus"
   | "horse_minus"
@@ -95,6 +98,8 @@ export interface PlayCardAction {
   cardId: string;
   /** 目标玩家编号，部分牌可为空。 */
   targetId?: string;
+  /** 第二目标玩家编号，仅部分双目标牌使用。 */
+  secondaryTargetId?: string;
 }
 
 /**

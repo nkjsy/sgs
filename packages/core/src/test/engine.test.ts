@@ -299,6 +299,10 @@ test("lightning should deal 3 damage on spade 2-9 judgment", () => {
   const state = createInitialGame(42);
   const target = state.players[2];
 
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
   state.currentPlayerId = target.id;
   state.phase = "judge";
   target.judgmentZone.delayedTricks = [{ id: "lightning-1", kind: "lightning" }];
@@ -381,4 +385,171 @@ test("lightning should be nullifiable before damage judgment", () => {
   assert.equal(target.hp, hpBefore);
   assert.ok(state.discard.some((card) => card.id === "lightning-3"));
   assert.ok(state.discard.some((card) => card.id === "nullify-l-1"));
+});
+
+/**
+ * 验证【桃园结义】会令所有存活角色各回复 1 点体力（不超过上限）。
+ */
+test("taoyuan should heal all alive players by 1 up to max hp", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+
+  actor.hand = [{ id: "taoyuan-1", kind: "taoyuan" }];
+  state.players[0].hp = 3;
+  state.players[1].hp = 2;
+  state.players[2].hp = 4;
+  state.players[3].hp = 1;
+  state.players[4].hp = 2;
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "taoyuan-1"
+  });
+
+  assert.equal(state.players[0].hp, 4);
+  assert.equal(state.players[1].hp, 3);
+  assert.equal(state.players[2].hp, 4);
+  assert.equal(state.players[3].hp, 2);
+  assert.equal(state.players[4].hp, 3);
+  assert.ok(state.discard.some((card) => card.id === "taoyuan-1"));
+});
+
+/**
+ * 验证【五谷丰登】会亮出并按座次分配卡牌到所有存活角色手中。
+ */
+test("harvest should distribute one revealed card to each alive player", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "harvest-1", kind: "harvest" }];
+  state.deck = [
+    { id: "h-card-1", kind: "slash" },
+    { id: "h-card-2", kind: "peach" },
+    { id: "h-card-3", kind: "dodge" },
+    { id: "h-card-4", kind: "duel" },
+    { id: "h-card-5", kind: "nullify" }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "harvest-1"
+  });
+
+  const handCounts = state.players.map((player) => player.hand.length);
+  assert.deepEqual(handCounts, [1, 1, 1, 1, 1]);
+  assert.equal(state.deck.length, 0);
+  assert.ok(state.discard.some((card) => card.id === "harvest-1"));
+});
+
+/**
+ * 验证【借刀杀人】可强制持武器目标对指定角色打出【杀】。
+ */
+test("collateral should force weapon holder to slash designated target", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const weaponHolder = state.players[1];
+  const slashTarget = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "collateral-1", kind: "collateral" }];
+  weaponHolder.equipment.weapon = { id: "wh-weapon", kind: "weapon_blade" };
+  weaponHolder.hand = [{ id: "forced-slash", kind: "slash" }];
+  slashTarget.hand = [];
+
+  const hpBefore = slashTarget.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "collateral-1",
+    targetId: weaponHolder.id,
+    secondaryTargetId: slashTarget.id
+  });
+
+  assert.equal(slashTarget.hp, hpBefore - 1);
+  assert.equal(weaponHolder.hand.length, 0);
+  assert.ok(state.discard.some((card) => card.id === "forced-slash"));
+  assert.ok(state.discard.some((card) => card.id === "collateral-1"));
+});
+
+/**
+ * 验证【借刀杀人】在持刀者无法打出【杀】时，使用者获得其武器。
+ */
+test("collateral should transfer weapon when holder cannot slash", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const weaponHolder = state.players[1];
+  const slashTarget = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "collateral-2", kind: "collateral" }];
+  weaponHolder.equipment.weapon = { id: "wh-weapon-2", kind: "weapon_blade" };
+  weaponHolder.hand = [{ id: "not-slash", kind: "dodge" }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "collateral-2",
+    targetId: weaponHolder.id,
+    secondaryTargetId: slashTarget.id
+  });
+
+  assert.equal(weaponHolder.equipment.weapon, null);
+  assert.ok(actor.hand.some((card) => card.id === "wh-weapon-2"));
+  assert.ok(state.discard.some((card) => card.id === "collateral-2"));
+});
+
+/**
+ * 验证【五谷丰登】可按目标被【无懈可击】抵消。
+ */
+test("harvest should be nullifiable per target", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[2];
+  const target = state.players[0];
+  const protector = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "harvest-nullify-1", kind: "harvest" }];
+  protector.hand = [{ id: "harvest-nullify-rsp", kind: "nullify" }];
+  state.deck = [
+    { id: "hv-1", kind: "slash" },
+    { id: "hv-2", kind: "dodge" },
+    { id: "hv-3", kind: "peach" },
+    { id: "hv-4", kind: "duel" },
+    { id: "hv-5", kind: "snatch" }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "harvest-nullify-1"
+  });
+
+  assert.equal(target.hand.length, 0);
+  assert.ok(state.discard.some((card) => card.id === "harvest-nullify-rsp"));
 });
