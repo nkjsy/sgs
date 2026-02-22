@@ -6,8 +6,9 @@ import { getLegalActions } from "./engine";
  *
  * 策略优先级：
  * 1) 先保命（如果可用桃并受伤则优先使用）。
- * 2) 再尝试功能锦囊（顺手牵羊、过河拆桥）。
- * 3) 再尝试进攻（使用杀攻击体力最低目标）。
+ * 2) 再尝试功能锦囊（顺手牵羊、过河拆桥、决斗、乐不思蜀）。
+ * 3) 再尝试群体锦囊（南蛮入侵、万箭齐发）。
+ * 4) 再尝试进攻（使用杀攻击体力最低目标）。
  * 4) 无更优动作时结束出牌阶段。
  *
  * @param context AI 可见上下文。
@@ -26,7 +27,7 @@ export function chooseAiAction(context: AiContext): TurnAction {
       return false;
     }
 
-    if (card.kind !== "snatch" && card.kind !== "dismantle") {
+    if (card.kind !== "snatch" && card.kind !== "dismantle" && card.kind !== "duel" && card.kind !== "indulgence") {
       return false;
     }
 
@@ -79,6 +80,80 @@ export function chooseAiAction(context: AiContext): TurnAction {
       return (leftTarget?.hand.length ?? 0) - (rightTarget?.hand.length ?? 0);
     });
     return sorted[sorted.length - 1];
+  }
+
+  const delayedAction = legal.find((action) => {
+    if (!isPlayCardAction(action)) {
+      return false;
+    }
+
+    const card = context.actor.hand.find((item) => item.id === action.cardId);
+    if (!card) {
+      return false;
+    }
+
+    if (card.kind === "lightning") {
+      const hpSafe = context.actor.hp >= 3;
+      const enemyCount = context.state.players.filter(
+        (player) => player.alive && player.id !== context.actor.id && shouldAttackTarget(context.actor.identity, player.identity)
+      ).length;
+      return hpSafe && enemyCount >= 2;
+    }
+
+    return false;
+  });
+
+  if (delayedAction) {
+    return delayedAction;
+  }
+
+  const equipmentAction = legal.find((action) => {
+    if (!isPlayCardAction(action)) {
+      return false;
+    }
+    const card = context.actor.hand.find((item) => item.id === action.cardId);
+    if (!card) {
+      return false;
+    }
+
+    if (card.kind === "weapon_blade") {
+      return context.actor.equipment.weapon?.kind !== "weapon_blade";
+    }
+    if (card.kind === "horse_plus") {
+      return !context.actor.equipment.horsePlus;
+    }
+    if (card.kind === "horse_minus") {
+      return !context.actor.equipment.horseMinus;
+    }
+    return false;
+  });
+
+  if (equipmentAction) {
+    return equipmentAction;
+  }
+
+  const aoeAction = legal.find((action) => {
+    if (!isPlayCardAction(action)) {
+      return false;
+    }
+
+    const card = context.actor.hand.find((item) => item.id === action.cardId);
+    if (!card || (card.kind !== "barbarian" && card.kind !== "archery")) {
+      return false;
+    }
+
+    const enemies = context.state.players.filter(
+      (player) => player.alive && player.id !== context.actor.id && shouldAttackTarget(context.actor.identity, player.identity)
+    );
+    const allies = context.state.players.filter(
+      (player) => player.alive && player.id !== context.actor.id && isSameCamp(context.actor.identity, player.identity)
+    );
+
+    return enemies.length >= allies.length;
+  });
+
+  if (aoeAction) {
+    return aoeAction;
   }
 
   if (slashActions.length > 0) {
@@ -148,4 +223,23 @@ function shouldAttackTarget(actorIdentity: Identity, targetIdentity: Identity): 
   }
 
   return targetIdentity !== "renegade";
+}
+
+/**
+ * 判断两名身份是否同阵营。
+ *
+ * @param left 左侧身份。
+ * @param right 右侧身份。
+ * @returns 同阵营返回 true。
+ */
+function isSameCamp(left: Identity, right: Identity): boolean {
+  if (left === "lord" || left === "loyalist") {
+    return right === "lord" || right === "loyalist";
+  }
+
+  if (left === "rebel") {
+    return right === "rebel";
+  }
+
+  return right === "renegade";
 }

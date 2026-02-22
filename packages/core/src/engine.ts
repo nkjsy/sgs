@@ -10,6 +10,9 @@ import {
   TurnAction
 } from "./types";
 
+const EQUIPMENT_KINDS: CardKind[] = ["weapon_blade", "horse_plus", "horse_minus"];
+const DELAYED_TRICK_KINDS: CardKind[] = ["indulgence", "lightning"];
+
 /**
  * 创建一局 5 人身份局的初始状态。
  *
@@ -26,7 +29,15 @@ export function createInitialGame(seed: number): GameState {
     maxHp: identity === "lord" ? 5 : 4,
     hand: [],
     alive: true,
-    isAi: index !== 0
+    isAi: index !== 0,
+    equipment: {
+      weapon: null,
+      horsePlus: null,
+      horseMinus: null
+    },
+    judgmentZone: {
+      delayedTricks: []
+    }
   }));
 
   const fullDeck = shuffleWithSeed(createDeck(), seed);
@@ -39,6 +50,7 @@ export function createInitialGame(seed: number): GameState {
     events: [],
     turnCount: 1,
     slashUsedInTurn: 0,
+    skipPlayPhaseForCurrentTurn: false,
     winner: null,
     seed
   };
@@ -63,8 +75,22 @@ export function stepPhase(state: GameState): void {
 
   const current = requireAlivePlayer(state, state.currentPlayerId);
 
+  if (state.phase === "judge") {
+    resolveJudgePhase(state, current.id);
+    state.phase = "draw";
+    pushEvent(state, "phase", `${current.name} 进入摸牌阶段`);
+    return;
+  }
+
   if (state.phase === "draw") {
     drawCards(state, current.id, 2);
+
+    if (state.skipPlayPhaseForCurrentTurn) {
+      state.phase = "discard";
+      pushEvent(state, "phase", `${current.name} 跳过出牌阶段，进入弃牌阶段`);
+      return;
+    }
+
     state.phase = "play";
     pushEvent(state, "phase", `${current.name} 进入出牌阶段`);
     return;
@@ -142,6 +168,63 @@ export function getLegalActions(state: GameState): TurnAction[] {
           actorId: actor.id,
           cardId: card.id,
           targetId: target.id
+        });
+      }
+      continue;
+    }
+
+    if (card.kind === "duel") {
+      for (const target of getAliveOpponents(state, actor.id)) {
+        actions.push({
+          type: "play-card",
+          actorId: actor.id,
+          cardId: card.id,
+          targetId: target.id
+        });
+      }
+      continue;
+    }
+
+    if (isEquipmentKind(card.kind)) {
+      actions.push({
+        type: "play-card",
+        actorId: actor.id,
+        cardId: card.id,
+        targetId: actor.id
+      });
+      continue;
+    }
+
+    if (card.kind === "indulgence") {
+      for (const target of getAliveOpponents(state, actor.id).filter((candidate) => !hasDelayedTrick(candidate, "indulgence"))) {
+        actions.push({
+          type: "play-card",
+          actorId: actor.id,
+          cardId: card.id,
+          targetId: target.id
+        });
+      }
+      continue;
+    }
+
+    if (card.kind === "lightning") {
+      if (!hasDelayedTrick(actor, "lightning")) {
+        actions.push({
+          type: "play-card",
+          actorId: actor.id,
+          cardId: card.id,
+          targetId: actor.id
+        });
+      }
+      continue;
+    }
+
+    if (card.kind === "barbarian" || card.kind === "archery") {
+      if (getAliveOpponents(state, actor.id).length > 0) {
+        actions.push({
+          type: "play-card",
+          actorId: actor.id,
+          cardId: card.id
         });
       }
       continue;
@@ -347,7 +430,334 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
     return;
   }
 
+  if (card.kind === "duel") {
+    const target = action.targetId ? getPlayerById(state, action.targetId) : null;
+    if (!target || !target.alive || target.id === actor.id) {
+      actor.hand.push(card);
+      return;
+    }
+
+    pushEvent(state, "card", `${actor.name} 对 ${target.name} 使用决斗`);
+    const negated = resolveNullifyChain(state, actor.id, target.id, card.kind);
+    if (negated) {
+      pushEvent(state, "nullify", "决斗 被无懈可击抵消");
+      state.discard.push(card);
+      return;
+    }
+
+    resolveDuel(state, actor.id, target.id);
+    state.discard.push(card);
+    return;
+  }
+
+  if (isEquipmentKind(card.kind)) {
+    equipCard(state, actor, card);
+    return;
+  }
+
+  if (isDelayedTrickKind(card.kind)) {
+    if (card.kind === "indulgence") {
+      const target = action.targetId ? getPlayerById(state, action.targetId) : null;
+      if (!target || !target.alive || target.id === actor.id || hasDelayedTrick(target, "indulgence")) {
+        actor.hand.push(card);
+        return;
+      }
+
+      target.judgmentZone.delayedTricks.push(card);
+      pushEvent(state, "card", `${actor.name} 对 ${target.name} 使用乐不思蜀`);
+      pushEvent(state, "trick", `乐不思蜀 进入 ${target.name} 的判定区`);
+      return;
+    }
+
+    if (card.kind === "lightning") {
+      if (hasDelayedTrick(actor, "lightning")) {
+        actor.hand.push(card);
+        return;
+      }
+
+      actor.judgmentZone.delayedTricks.push(card);
+      pushEvent(state, "card", `${actor.name} 使用闪电`);
+      pushEvent(state, "trick", `闪电 进入 ${actor.name} 的判定区`);
+      return;
+    }
+  }
+
+  if (card.kind === "barbarian" || card.kind === "archery") {
+    const trickName = card.kind === "barbarian" ? "南蛮入侵" : "万箭齐发";
+    pushEvent(state, "card", `${actor.name} 使用${trickName}`);
+
+    const targets = getAliveOpponents(state, actor.id);
+    for (const target of targets) {
+      const negated = resolveNullifyChain(state, actor.id, target.id, card.kind);
+      if (negated) {
+        pushEvent(state, "nullify", `${target.name} 的${trickName}效果被无懈可击抵消`);
+        continue;
+      }
+
+      if (card.kind === "barbarian") {
+        const slash = consumeFirstCardByKind(target, "slash");
+        if (slash) {
+          state.discard.push(slash);
+          pushEvent(state, "response", `${target.name} 打出杀响应南蛮入侵`);
+          continue;
+        }
+      }
+
+      if (card.kind === "archery") {
+        const dodge = consumeFirstCardByKind(target, "dodge");
+        if (dodge) {
+          state.discard.push(dodge);
+          pushEvent(state, "response", `${target.name} 打出闪响应万箭齐发`);
+          continue;
+        }
+      }
+
+      dealDamage(state, actor.id, target.id, 1);
+      if (state.winner) {
+        break;
+      }
+    }
+
+    state.discard.push(card);
+    return;
+  }
+
   actor.hand.push(card);
+}
+
+/**
+ * 结算【决斗】效果。
+ *
+ * 由目标开始与使用者轮流打出【杀】，首次无法打出者受到对方造成的 1 点伤害。
+ *
+ * @param state 当前游戏状态。
+ * @param sourceId 决斗使用者。
+ * @param targetId 决斗目标。
+ */
+function resolveDuel(state: GameState, sourceId: string, targetId: string): void {
+  let current = requireAlivePlayer(state, targetId);
+  let opponent = requireAlivePlayer(state, sourceId);
+
+  while (current.alive && opponent.alive && !state.winner) {
+    const slash = consumeFirstCardByKind(current, "slash");
+    if (!slash) {
+      dealDamage(state, opponent.id, current.id, 1);
+      return;
+    }
+
+    state.discard.push(slash);
+    pushEvent(state, "response", `${current.name} 在决斗中打出杀`);
+
+    const nextCurrent = opponent;
+    const nextOpponent = current;
+    current = nextCurrent;
+    opponent = nextOpponent;
+  }
+}
+
+/**
+ * 结算当前角色判定阶段中的延时类锦囊。
+ *
+ * @param state 当前游戏状态。
+ * @param playerId 当前回合角色编号。
+ */
+function resolveJudgePhase(state: GameState, playerId: string): void {
+  const player = requireAlivePlayer(state, playerId);
+  if (player.judgmentZone.delayedTricks.length === 0) {
+    return;
+  }
+
+  const queue = [...player.judgmentZone.delayedTricks];
+  player.judgmentZone.delayedTricks = [];
+
+  for (const trick of queue) {
+    if (!player.alive || state.winner) {
+      state.discard.push(trick);
+      continue;
+    }
+
+    if (!isDelayedTrickKind(trick.kind)) {
+      state.discard.push(trick);
+      continue;
+    }
+
+    const delayedNegated = resolveDelayedTrickNullifyChain(state, player, trick.kind);
+    if (delayedNegated) {
+      pushEvent(state, "nullify", `${player.name} 的延时锦囊效果被无懈可击抵消`);
+      state.discard.push(trick);
+      continue;
+    }
+
+    const judgeCard = drawJudgmentCard(state, player);
+    if (!judgeCard) {
+      state.discard.push(trick);
+      continue;
+    }
+
+    if (trick.kind === "indulgence") {
+      if (!isHeart(judgeCard)) {
+        state.skipPlayPhaseForCurrentTurn = true;
+        pushEvent(state, "judge", `${player.name} 的乐不思蜀判定失败（非红桃）`);
+      } else {
+        pushEvent(state, "judge", `${player.name} 的乐不思蜀判定成功（红桃）`);
+      }
+      state.discard.push(trick);
+      continue;
+    }
+
+    if (trick.kind === "lightning") {
+      if (isSpade(judgeCard) && isPointBetween(judgeCard, 2, 9)) {
+        pushEvent(state, "judge", `${player.name} 的闪电判定命中（黑桃2~9）`);
+        state.discard.push(trick);
+        dealDamageWithoutSource(state, player.id, 3, "闪电");
+        continue;
+      }
+
+      pushEvent(state, "judge", `${player.name} 的闪电判定未命中，闪电传递`);
+      transferLightning(state, player.id, trick);
+      continue;
+    }
+
+    state.discard.push(trick);
+  }
+}
+
+/**
+ * 结算延时类锦囊在判定生效前的【无懈可击】响应链。
+ *
+ * 规则简化说明：
+ * - 先由目标同阵营角色优先响应（抵消效果）。
+ * - 然后可被目标敌对阵营角色继续反制。
+ * - 最终 `negated=true` 表示该延时锦囊本次判定效果被抵消。
+ *
+ * @param state 当前游戏状态。
+ * @param target 延时类锦囊当前生效目标。
+ * @param trickKind 延时类锦囊类型。
+ * @returns 是否被无懈抵消。
+ */
+function resolveDelayedTrickNullifyChain(
+  state: GameState,
+  target: PlayerState,
+  trickKind: Extract<CardKind, "indulgence" | "lightning">
+): boolean {
+  let negated = false;
+
+  while (true) {
+    let played = false;
+    const responders = getAlivePlayersFrom(state, target.id);
+    for (const responder of responders) {
+      const hasNullify = responder.hand.some((card) => card.kind === "nullify");
+      if (!hasNullify) {
+        continue;
+      }
+
+      const shouldPlay = !negated
+        ? isSameCamp(responder.identity, target.identity)
+        : !isSameCamp(responder.identity, target.identity);
+      if (!shouldPlay) {
+        continue;
+      }
+
+      const nullify = consumeFirstCardByKind(responder, "nullify");
+      if (!nullify) {
+        continue;
+      }
+
+      state.discard.push(nullify);
+      negated = !negated;
+      played = true;
+      pushEvent(state, "nullify", `${responder.name} 对${getDelayedTrickName(trickKind)}打出无懈可击`);
+      break;
+    }
+
+    if (!played) {
+      break;
+    }
+  }
+
+  return negated;
+}
+
+/**
+ * 抽取一张判定牌并写入日志。
+ *
+ * @param state 当前游戏状态。
+ * @param player 判定角色。
+ * @returns 判定牌。
+ */
+function drawJudgmentCard(state: GameState, player: PlayerState): Card | undefined {
+  if (state.deck.length === 0) {
+    refillDeckFromDiscard(state);
+  }
+
+  const judgeCard = state.deck.shift();
+  if (!judgeCard) {
+    return undefined;
+  }
+
+  pushEvent(state, "judge", `${player.name} 判定牌：${judgeCard.id}（${getCardSuit(judgeCard)}${getCardPoint(judgeCard)}）`);
+  state.discard.push(judgeCard);
+  return judgeCard;
+}
+
+/**
+ * 闪电未命中时传递到下一个合法角色判定区。
+ *
+ * @param state 当前游戏状态。
+ * @param currentPlayerId 当前判定角色编号。
+ * @param lightning 闪电牌。
+ */
+function transferLightning(state: GameState, currentPlayerId: string, lightning: Card): void {
+  const aliveOrder = getAlivePlayersFrom(state, currentPlayerId);
+  for (let index = 1; index < aliveOrder.length; index += 1) {
+    const candidate = aliveOrder[index];
+    if (!hasDelayedTrick(candidate, "lightning")) {
+      candidate.judgmentZone.delayedTricks.push(lightning);
+      pushEvent(state, "trick", `闪电 传递到 ${candidate.name} 的判定区`);
+      return;
+    }
+  }
+
+  const current = requireAlivePlayer(state, currentPlayerId);
+  current.judgmentZone.delayedTricks.push(lightning);
+  pushEvent(state, "trick", `闪电 留在 ${current.name} 的判定区`);
+}
+
+/**
+ * 装备一张装备牌到对应装备槽位。
+ *
+ * 若槽位已有牌，则先将原装备置入弃牌堆。
+ *
+ * @param state 当前游戏状态。
+ * @param actor 装备者。
+ * @param card 待装备的卡牌。
+ */
+function equipCard(state: GameState, actor: PlayerState, card: Card): void {
+  if (card.kind === "weapon_blade") {
+    if (actor.equipment.weapon) {
+      state.discard.push(actor.equipment.weapon);
+    }
+    actor.equipment.weapon = card;
+    pushEvent(state, "equip", `${actor.name} 装备了武器（攻击范围+1）`);
+    return;
+  }
+
+  if (card.kind === "horse_plus") {
+    if (actor.equipment.horsePlus) {
+      state.discard.push(actor.equipment.horsePlus);
+    }
+    actor.equipment.horsePlus = card;
+    pushEvent(state, "equip", `${actor.name} 装备了+1坐骑`);
+    return;
+  }
+
+  if (card.kind === "horse_minus") {
+    if (actor.equipment.horseMinus) {
+      state.discard.push(actor.equipment.horseMinus);
+    }
+    actor.equipment.horseMinus = card;
+    pushEvent(state, "equip", `${actor.name} 装备了-1坐骑`);
+  }
 }
 
 /**
@@ -364,7 +774,12 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
  * @param trickKind 锦囊类型。
  * @returns 返回 true 表示锦囊最终被抵消。
  */
-function resolveNullifyChain(state: GameState, sourceId: string, targetId: string, trickKind: Extract<CardKind, "dismantle" | "snatch">): boolean {
+function resolveNullifyChain(
+  state: GameState,
+  sourceId: string,
+  targetId: string,
+  trickKind: Extract<CardKind, "dismantle" | "snatch" | "duel" | "barbarian" | "archery">
+): boolean {
   let negated = false;
 
   while (true) {
@@ -412,7 +827,7 @@ function shouldPlayNullify(
   responder: PlayerState,
   sourceId: string,
   targetId: string,
-  trickKind: Extract<CardKind, "dismantle" | "snatch">,
+  trickKind: Extract<CardKind, "dismantle" | "snatch" | "duel" | "barbarian" | "archery">,
   currentlyNegated: boolean
 ): boolean {
   if (!responder.hand.some((card) => card.kind === "nullify")) {
@@ -423,6 +838,10 @@ function shouldPlayNullify(
   const target = requireAlivePlayer(state, targetId);
 
   if (!currentlyNegated) {
+    if (trickKind === "barbarian" || trickKind === "archery") {
+      return isSameCamp(responder.identity, target.identity) && !isSameCamp(source.identity, target.identity);
+    }
+
     return isSameCamp(responder.identity, target.identity) && !isSameCamp(source.identity, target.identity);
   }
 
@@ -440,7 +859,27 @@ function shouldPlayNullify(
  * @returns 若目标在攻击范围内返回 true。
  */
 function isInAttackRange(state: GameState, fromId: string, toId: string): boolean {
-  return getDistance(state, fromId, toId) <= 1;
+  return getDistance(state, fromId, toId) <= getAttackRange(state, fromId);
+}
+
+/**
+ * 获取角色当前攻击范围。
+ *
+ * 规则：
+ * - 基础攻击范围为 1。
+ * - 装备武器后攻击范围 +1（当前仅实现一种武器示例）。
+ *
+ * @param state 当前游戏状态。
+ * @param playerId 角色编号。
+ * @returns 当前攻击范围。
+ */
+function getAttackRange(state: GameState, playerId: string): number {
+  const player = requireAlivePlayer(state, playerId);
+  let range = 1;
+  if (player.equipment.weapon?.kind === "weapon_blade") {
+    range += 1;
+  }
+  return range;
 }
 
 /**
@@ -465,7 +904,19 @@ function getDistance(state: GameState, fromId: string, toId: string): number {
 
   const clockwise = (toIndex - fromIndex + aliveOrder.length) % aliveOrder.length;
   const anticlockwise = (fromIndex - toIndex + aliveOrder.length) % aliveOrder.length;
-  return Math.min(clockwise, anticlockwise);
+  let distance = Math.min(clockwise, anticlockwise);
+
+  const from = aliveOrder[fromIndex];
+  const to = aliveOrder[toIndex];
+
+  if (from.equipment.horseMinus) {
+    distance -= 1;
+  }
+  if (to.equipment.horsePlus) {
+    distance += 1;
+  }
+
+  return Math.max(1, distance);
 }
 
 /**
@@ -496,11 +947,66 @@ function dealDamage(state: GameState, sourceId: string, targetId: string, amount
     const rescued = tryRescueWithPeach(state, target.id);
     if (!rescued) {
       target.alive = false;
-      target.hand = [];
+      clearDeadPlayerCards(state, target);
       pushEvent(state, "death", `${target.name} 阵亡`);
       updateWinner(state);
     }
   }
+}
+
+/**
+ * 造成无来源伤害。
+ *
+ * @param state 当前游戏状态。
+ * @param targetId 受伤角色编号。
+ * @param amount 伤害值。
+ * @param reason 伤害原因。
+ */
+function dealDamageWithoutSource(state: GameState, targetId: string, amount: number, reason: string): void {
+  const target = requireAlivePlayer(state, targetId);
+  target.hp -= amount;
+  pushEvent(state, "damage", `${target.name} 受到 ${reason} 造成的 ${amount} 点无来源伤害`);
+
+  if (target.hp <= 0) {
+    const rescued = tryRescueWithPeach(state, target.id);
+    if (!rescued) {
+      target.alive = false;
+      clearDeadPlayerCards(state, target);
+      pushEvent(state, "death", `${target.name} 阵亡`);
+      updateWinner(state);
+    }
+  }
+}
+
+/**
+ * 阵亡角色的所有区域牌进入弃牌堆。
+ *
+ * @param state 当前游戏状态。
+ * @param target 阵亡角色。
+ */
+function clearDeadPlayerCards(state: GameState, target: PlayerState): void {
+  for (const card of target.hand) {
+    state.discard.push(card);
+  }
+  target.hand = [];
+
+  if (target.equipment.weapon) {
+    state.discard.push(target.equipment.weapon);
+    target.equipment.weapon = null;
+  }
+  if (target.equipment.horsePlus) {
+    state.discard.push(target.equipment.horsePlus);
+    target.equipment.horsePlus = null;
+  }
+  if (target.equipment.horseMinus) {
+    state.discard.push(target.equipment.horseMinus);
+    target.equipment.horseMinus = null;
+  }
+
+  for (const trick of target.judgmentZone.delayedTricks) {
+    state.discard.push(trick);
+  }
+  target.judgmentZone.delayedTricks = [];
 }
 
 function tryRescueWithPeach(state: GameState, targetId: string): boolean {
@@ -611,10 +1117,12 @@ function advanceTurn(state: GameState): void {
   const currentIndex = alivePlayers.findIndex((player) => player.id === state.currentPlayerId);
   const next = alivePlayers[(currentIndex + 1) % alivePlayers.length];
   state.currentPlayerId = next.id;
-  state.phase = "draw";
+  state.phase = "judge";
   state.slashUsedInTurn = 0;
+  state.skipPlayPhaseForCurrentTurn = false;
   state.turnCount += 1;
   pushEvent(state, "turn", `轮到 ${next.name} 的回合`);
+  pushEvent(state, "phase", `${next.name} 进入判定阶段`);
 }
 
 function getAliveOpponents(state: GameState, actorId: string): PlayerState[] {
@@ -654,4 +1162,104 @@ function requireAlivePlayer(state: GameState, playerId: string): PlayerState {
 
 function pushEvent(state: GameState, type: string, message: string): void {
   state.events.push({ type, message });
+}
+
+/**
+ * 判断卡牌是否属于当前已支持的装备牌。
+ *
+ * @param kind 卡牌类型。
+ * @returns 若为装备牌返回 true。
+ */
+function isEquipmentKind(kind: CardKind): boolean {
+  return EQUIPMENT_KINDS.includes(kind);
+}
+
+/**
+ * 判断卡牌是否属于延时类锦囊。
+ *
+ * @param kind 卡牌类型。
+ * @returns 若为延时类锦囊返回 true。
+ */
+function isDelayedTrickKind(kind: CardKind): kind is Extract<CardKind, "indulgence" | "lightning"> {
+  return DELAYED_TRICK_KINDS.includes(kind);
+}
+
+/**
+ * 获取延时类锦囊中文名称。
+ *
+ * @param kind 延时类锦囊类型。
+ * @returns 中文名称。
+ */
+function getDelayedTrickName(kind: Extract<CardKind, "indulgence" | "lightning">): string {
+  return kind === "indulgence" ? "乐不思蜀" : "闪电";
+}
+
+/**
+ * 判断角色判定区是否已有同名延时类锦囊。
+ *
+ * @param player 角色。
+ * @param kind 延时类锦囊类型。
+ * @returns 若已存在返回 true。
+ */
+function hasDelayedTrick(player: PlayerState, kind: Extract<CardKind, "indulgence" | "lightning">): boolean {
+  return player.judgmentZone.delayedTricks.some((card) => card.kind === kind);
+}
+
+/**
+ * 获取卡牌花色（基于卡牌编号序号做可复现映射）。
+ *
+ * @param card 卡牌。
+ * @returns 花色。
+ */
+function getCardSuit(card: Card): "spade" | "heart" | "club" | "diamond" {
+  const seq = getCardSequence(card);
+  const mod = seq % 4;
+  if (mod === 0) {
+    return "spade";
+  }
+  if (mod === 1) {
+    return "heart";
+  }
+  if (mod === 2) {
+    return "club";
+  }
+  return "diamond";
+}
+
+/**
+ * 获取卡牌点数（1~13）。
+ *
+ * @param card 卡牌。
+ * @returns 点数。
+ */
+function getCardPoint(card: Card): number {
+  return (getCardSequence(card) % 13) + 1;
+}
+
+function isHeart(card: Card): boolean {
+  return getCardSuit(card) === "heart";
+}
+
+function isSpade(card: Card): boolean {
+  return getCardSuit(card) === "spade";
+}
+
+function isPointBetween(card: Card, start: number, end: number): boolean {
+  const point = getCardPoint(card);
+  return point >= start && point <= end;
+}
+
+/**
+ * 从卡牌编号中提取序号。
+ *
+ * @param card 卡牌。
+ * @returns 序号。
+ */
+function getCardSequence(card: Card): number {
+  const parts = card.id.split("-");
+  const raw = Number(parts[parts.length - 1]);
+  if (Number.isFinite(raw) && raw > 0) {
+    return raw;
+  }
+  return 1;
 }

@@ -10,6 +10,14 @@ import { Card, CardKind } from "./types";
  * - 过河拆桥 8
  * - 顺手牵羊 8
  * - 无懈可击 6
+ * - 决斗 6
+ * - 南蛮入侵 4
+ * - 万箭齐发 4
+ * - 武器（攻击范围+1） 4
+ * - +1坐骑 4
+ * - -1坐骑 4
+ * - 乐不思蜀 4
+ * - 闪电 2
  *
  * @param totalPerKind 兼容参数，若传入则会覆盖每种牌数量为同一值。
  * @returns 未洗牌的卡牌列表。
@@ -23,7 +31,15 @@ export function createDeck(totalPerKind = 24): Card[] {
       { kind: "peach", count: 12 },
       { kind: "dismantle", count: 8 },
       { kind: "snatch", count: 8 },
-      { kind: "nullify", count: 6 }
+      { kind: "nullify", count: 6 },
+      { kind: "duel", count: 6 },
+      { kind: "barbarian", count: 4 },
+      { kind: "archery", count: 4 },
+      { kind: "weapon_blade", count: 4 },
+      { kind: "horse_plus", count: 4 },
+      { kind: "horse_minus", count: 4 },
+      { kind: "indulgence", count: 4 },
+      { kind: "lightning", count: 2 }
     ]
     : [
       { kind: "slash", count: totalPerKind },
@@ -31,7 +47,15 @@ export function createDeck(totalPerKind = 24): Card[] {
       { kind: "peach", count: totalPerKind },
       { kind: "dismantle", count: totalPerKind },
       { kind: "snatch", count: totalPerKind },
-      { kind: "nullify", count: totalPerKind }
+      { kind: "nullify", count: totalPerKind },
+      { kind: "duel", count: totalPerKind },
+      { kind: "barbarian", count: totalPerKind },
+      { kind: "archery", count: totalPerKind },
+      { kind: "weapon_blade", count: totalPerKind },
+      { kind: "horse_plus", count: totalPerKind },
+      { kind: "horse_minus", count: totalPerKind },
+      { kind: "indulgence", count: totalPerKind },
+      { kind: "lightning", count: totalPerKind }
     ];
   let seq = 1;
 

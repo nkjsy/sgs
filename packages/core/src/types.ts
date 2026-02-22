@@ -6,12 +6,46 @@ export type Identity = "lord" | "loyalist" | "rebel" | "renegade";
 /**
  * 定义当前玩家回合所处阶段。
  */
-export type Phase = "draw" | "play" | "discard" | "end";
+export type Phase = "judge" | "draw" | "play" | "discard" | "end";
 
 /**
  * 定义当前可用的基础卡牌类型。
  */
-export type CardKind = "slash" | "dodge" | "peach" | "dismantle" | "snatch" | "nullify";
+export type CardKind =
+  | "slash"
+  | "dodge"
+  | "peach"
+  | "dismantle"
+  | "snatch"
+  | "nullify"
+  | "duel"
+  | "barbarian"
+  | "archery"
+  | "weapon_blade"
+  | "horse_plus"
+  | "horse_minus"
+  | "indulgence"
+  | "lightning";
+
+/**
+ * 表示角色装备区状态。
+ */
+export interface EquipmentState {
+  /** 武器槽。 */
+  weapon: Card | null;
+  /** +1 坐骑槽。 */
+  horsePlus: Card | null;
+  /** -1 坐骑槽。 */
+  horseMinus: Card | null;
+}
+
+/**
+ * 表示角色判定区状态。
+ */
+export interface JudgmentZoneState {
+  /** 判定区内的延时类锦囊。 */
+  delayedTricks: Card[];
+}
 
 /**
  * 表示一张卡牌的数据结构。
@@ -43,6 +77,10 @@ export interface PlayerState {
   alive: boolean;
   /** 是否由 AI 托管。 */
   isAi: boolean;
+  /** 玩家当前装备区。 */
+  equipment: EquipmentState;
+  /** 玩家当前判定区。 */
+  judgmentZone: JudgmentZoneState;
 }
 
 /**
@@ -104,6 +142,8 @@ export interface GameState {
   turnCount: number;
   /** 当前行动角色在本回合已使用【杀】的次数。 */
   slashUsedInTurn: number;
+  /** 当前回合是否应跳过出牌阶段。 */
+  skipPlayPhaseForCurrentTurn: boolean;
   /** 获胜阵营，未结束时为空。 */
   winner: "lord-side" | "rebel-side" | "renegade" | null;
   /** 随机种子。 */
