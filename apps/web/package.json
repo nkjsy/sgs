@@ -1,0 +1,9 @@
+{
+  "name": "@sgs/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "node -e \"console.log('web shell build placeholder')\"",
+    "test": "node --test"
+  }
+}

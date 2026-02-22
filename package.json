@@ -1,0 +1,19 @@
+{
+  "name": "sgs-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Single-player Sanguosha MVP with TypeScript game core and baseline AI",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run -w @sgs/core build && npm run -w @sgs/single build && npm run -w @sgs/web build",
+    "test": "npm run -w @sgs/core test && npm run -w @sgs/single test && npm run -w @sgs/web test",
+    "start:single": "npm run -w @sgs/single start"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.3"
+  }
+}
