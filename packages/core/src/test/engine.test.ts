@@ -705,3 +705,117 @@ test("ex nihilo should be canceled by nullify", () => {
   assert.equal(target.hand.length, 0);
   assert.ok(state.discard.some((card) => card.id === "nullify-ex-1"));
 });
+
+/**
+ * 验证诸葛连弩可令【杀】在出牌阶段不受次数上限限制。
+ */
+test("crossbow should allow multiple slashes in one play phase", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  actor.hand = [
+    { id: "slash-cb-1", kind: "slash", suit: "spade", point: 7 },
+    { id: "slash-cb-2", kind: "slash", suit: "club", point: 8 }
+  ];
+  target.hand = [];
+  actor.equipment.weapon = { id: "crossbow-eq", kind: "weapon_crossbow", suit: "club", point: 1 };
+
+  stepPhase(state);
+  const firstSlash = getLegalActions(state).find(
+    (action) => action.type === "play-card" && action.cardId === "slash-cb-1" && action.targetId === target.id
+  );
+  assert.ok(firstSlash);
+  applyAction(state, firstSlash);
+
+  const secondSlashStillLegal = getLegalActions(state).some(
+    (action) => action.type === "play-card" && action.cardId === "slash-cb-2" && action.targetId === target.id
+  );
+  assert.equal(secondSlashStillLegal, true);
+});
+
+/**
+ * 验证八卦阵判定为红色时可视为打出【闪】抵消【杀】。
+ */
+test("eight diagram should auto-dodge slash on red judgment", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "slash-ed-1", kind: "slash", suit: "spade", point: 9 }];
+  target.equipment.armor = { id: "eight-diagram-1", kind: "armor_eight_diagram", suit: "spade", point: 2 };
+  state.deck = [{ id: "judge-red-1", kind: "peach", suit: "heart", point: 6 }];
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-ed-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, hpBefore);
+});
+
+/**
+ * 验证仁王盾会令黑色【杀】无效。
+ */
+test("renwang shield should nullify black slash", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "slash-rw-1", kind: "slash", suit: "club", point: 9 }];
+  target.equipment.armor = { id: "renwang-1", kind: "armor_renwang_shield", suit: "club", point: 2 };
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-rw-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, hpBefore);
+});
+
+/**
+ * 验证青釭剑可无视防具，使黑色【杀】仍可对仁王盾目标造成伤害。
+ */
+test("qinggang sword should ignore renwang shield", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "slash-qg-1", kind: "slash", suit: "club", point: 10 }];
+  actor.equipment.weapon = { id: "qinggang-1", kind: "weapon_qinggang_sword", suit: "spade", point: 6 };
+  target.equipment.armor = { id: "renwang-2", kind: "armor_renwang_shield", suit: "club", point: 2 };
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-qg-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, hpBefore - 1);
+});

@@ -153,7 +153,7 @@ export function getLegalActions(state: GameState): TurnAction[] {
 
   for (const card of actor.hand) {
     if (card.kind === "slash") {
-      if (state.slashUsedInTurn >= 1) {
+      if (state.slashUsedInTurn >= 1 && !hasUnlimitedSlashUsage(actor)) {
         continue;
       }
 
@@ -428,7 +428,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
       return;
     }
 
-    if (state.slashUsedInTurn >= 1) {
+    if (state.slashUsedInTurn >= 1 && !hasUnlimitedSlashUsage(actor)) {
       actor.hand.push(card);
       return;
     }
@@ -436,16 +436,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
     state.slashUsedInTurn += 1;
 
     pushEvent(state, "card", `${actor.name} 对 ${target.name} 使用杀`);
-    const dodgeCard = consumeFirstCardByKind(target, "dodge");
-    if (dodgeCard) {
-      state.discard.push(dodgeCard);
-      pushEvent(state, "response", `${target.name} 打出闪，抵消杀`);
-      state.discard.push(card);
-      return;
-    }
-
-    dealDamage(state, actor.id, target.id, 1);
-    state.discard.push(card);
+    resolveSlashOnTarget(state, actor, target, card);
     return;
   }
 
@@ -536,16 +527,8 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
 
     const slash = consumeFirstCardByKind(weaponHolder, "slash");
     if (slash) {
-      state.discard.push(slash);
       pushEvent(state, "response", `${weaponHolder.name} 被迫对 ${slashTarget.name} 使用杀`);
-
-      const dodge = consumeFirstCardByKind(slashTarget, "dodge");
-      if (dodge) {
-        state.discard.push(dodge);
-        pushEvent(state, "response", `${slashTarget.name} 打出闪，抵消借刀杀人的杀`);
-      } else {
-        dealDamage(state, weaponHolder.id, slashTarget.id, 1);
-      }
+      resolveSlashOnTarget(state, weaponHolder, slashTarget, slash, "借刀杀人的杀");
     } else if (weaponHolder.equipment.weapon) {
       const takenWeapon = weaponHolder.equipment.weapon;
       weaponHolder.equipment.weapon = null;
@@ -645,6 +628,10 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
       }
 
       if (card.kind === "archery") {
+        if (tryAutoDodgeWithEightDiagram(state, target)) {
+          continue;
+        }
+
         const dodge = consumeFirstCardByKind(target, "dodge");
         if (dodge) {
           state.discard.push(dodge);
@@ -694,6 +681,60 @@ function resolveDuel(state: GameState, sourceId: string, targetId: string): void
     current = nextCurrent;
     opponent = nextOpponent;
   }
+}
+
+function resolveSlashOnTarget(
+  state: GameState,
+  source: PlayerState,
+  target: PlayerState,
+  slashCard: Card,
+  slashLabel = "杀"
+): void {
+  const armorIgnored = source.equipment.weapon?.kind === "weapon_qinggang_sword";
+  if (armorIgnored && target.equipment.armor) {
+    pushEvent(state, "equip", `${source.name} 的青釭剑无视 ${target.name} 的防具`);
+  }
+
+  if (!armorIgnored && target.equipment.armor?.kind === "armor_renwang_shield" && isBlack(slashCard)) {
+    pushEvent(state, "response", `${target.name} 的仁王盾使黑色${slashLabel}无效`);
+    state.discard.push(slashCard);
+    return;
+  }
+
+  if (!armorIgnored && tryAutoDodgeWithEightDiagram(state, target)) {
+    state.discard.push(slashCard);
+    return;
+  }
+
+  const dodgeCard = consumeFirstCardByKind(target, "dodge");
+  if (dodgeCard) {
+    state.discard.push(dodgeCard);
+    pushEvent(state, "response", `${target.name} 打出闪，抵消${slashLabel}`);
+    state.discard.push(slashCard);
+    return;
+  }
+
+  dealDamage(state, source.id, target.id, 1);
+  state.discard.push(slashCard);
+}
+
+function tryAutoDodgeWithEightDiagram(state: GameState, target: PlayerState): boolean {
+  if (target.equipment.armor?.kind !== "armor_eight_diagram") {
+    return false;
+  }
+
+  const judgeCard = drawJudgmentCard(state, target);
+  if (!judgeCard) {
+    return false;
+  }
+
+  if (isHeart(judgeCard) || getCardSuit(judgeCard) === "diamond") {
+    pushEvent(state, "response", `${target.name} 的八卦阵判定为红色，视为打出闪`);
+    return true;
+  }
+
+  pushEvent(state, "response", `${target.name} 的八卦阵判定为黑色，未能生效`);
+  return false;
 }
 
 /**
@@ -1436,6 +1477,10 @@ function getAliveOpponents(state: GameState, actorId: string): PlayerState[] {
   return state.players.filter((candidate) => candidate.alive && candidate.id !== actor.id);
 }
 
+function hasUnlimitedSlashUsage(player: PlayerState): boolean {
+  return player.equipment.weapon?.kind === "weapon_crossbow";
+}
+
 function removeCardFromHand(player: PlayerState, cardId: string): Card | undefined {
   const index = player.hand.findIndex((card) => card.id === cardId);
   if (index < 0) {
@@ -1625,6 +1670,11 @@ function isHeart(card: Card): boolean {
 
 function isSpade(card: Card): boolean {
   return getCardSuit(card) === "spade";
+}
+
+function isBlack(card: Card): boolean {
+  const suit = getCardSuit(card);
+  return suit === "spade" || suit === "club";
 }
 
 function isPointBetween(card: Card, start: number, end: number): boolean {
