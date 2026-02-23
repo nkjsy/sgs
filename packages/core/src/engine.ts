@@ -1540,6 +1540,7 @@ function dealDamage(state: GameState, sourceId: string, targetId: string, amount
 
   target.hp -= amount;
   pushEvent(state, "damage", `${source.name} 对 ${target.name} 造成 ${amount} 点伤害`);
+  tryTriggerYiji(state, target.id, amount);
 
   if (target.hp <= 0) {
     const rescued = tryRescueWithPeach(state, target.id);
@@ -1564,6 +1565,7 @@ function dealDamageWithoutSource(state: GameState, targetId: string, amount: num
   const target = requireAlivePlayer(state, targetId);
   target.hp -= amount;
   pushEvent(state, "damage", `${target.name} 受到 ${reason} 造成的 ${amount} 点无来源伤害`);
+  tryTriggerYiji(state, target.id, amount);
 
   if (target.hp <= 0) {
     const rescued = tryRescueWithPeach(state, target.id);
@@ -1574,6 +1576,66 @@ function dealDamageWithoutSource(state: GameState, targetId: string, amount: num
       updateWinner(state);
     }
   }
+}
+
+function tryTriggerYiji(state: GameState, targetId: string, damageAmount: number): void {
+  const target = requireAlivePlayer(state, targetId);
+  if (!hasSkill(state, target.id, STANDARD_SKILL_IDS.guojiaYiji)) {
+    return;
+  }
+
+  for (let index = 0; index < damageAmount; index += 1) {
+    const handCountBeforeDraw = target.hand.length;
+    drawCards(state, target.id, 2);
+    const drawnCards = target.hand.slice(handCountBeforeDraw);
+
+    distributeYijiCards(state, target, drawnCards);
+    pushEvent(state, "skill", `${target.name} 发动遗计，完成本次受伤后的分配`);
+  }
+}
+
+function distributeYijiCards(state: GameState, owner: PlayerState, cards: Card[]): void {
+  if (cards.length === 0) {
+    return;
+  }
+
+  const recipients = getYijiRecipients(state, owner);
+  if (recipients.length === 0) {
+    return;
+  }
+
+  let cursor = 0;
+  for (const card of cards) {
+    const recipient = recipients[cursor % recipients.length];
+    cursor += 1;
+
+    if (recipient.id === owner.id) {
+      pushEvent(state, "skill", `${owner.name} 发动遗计，保留了 ${card.id}`);
+      continue;
+    }
+
+    const moved = removeCardFromHand(owner, card.id);
+    if (!moved) {
+      continue;
+    }
+
+    recipient.hand.push(moved);
+    pushEvent(state, "skill", `${owner.name} 发动遗计，将 ${moved.id} 分配给 ${recipient.name}`);
+  }
+}
+
+function getYijiRecipients(state: GameState, owner: PlayerState): PlayerState[] {
+  if (!owner.isAi) {
+    return [owner];
+  }
+
+  const ordered = getAlivePlayersFrom(state, owner.id);
+  const allies = ordered.filter((candidate) => candidate.id !== owner.id && isSameCamp(candidate.identity, owner.identity));
+  if (allies.length > 0) {
+    return allies;
+  }
+
+  return [owner];
 }
 
 /**

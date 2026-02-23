@@ -1816,6 +1816,78 @@ test("wusheng skill should allow red card as slash in play phase", () => {
 });
 
 /**
+ * 验证郭嘉【遗计】在受到伤害后摸 2 张牌。
+ */
+test("yiji skill should draw 2 cards after taking damage", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, target.id, STANDARD_SKILL_IDS.guojiaYiji);
+  target.isAi = false;
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "slash-yiji-1", kind: "slash", suit: "spade", point: 8 }];
+  state.deck = [
+    { id: "yiji-draw-1", kind: "dodge", suit: "heart", point: 2 },
+    { id: "yiji-draw-2", kind: "peach", suit: "diamond", point: 7 }
+  ];
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-yiji-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, hpBefore - 1);
+  assert.ok(target.hand.some((card) => card.id === "yiji-draw-1"));
+  assert.ok(target.hand.some((card) => card.id === "yiji-draw-2"));
+});
+
+/**
+ * 验证 AI 郭嘉【遗计】会将本次摸到的牌分配给同阵营角色。
+ */
+test("yiji skill should distribute drawn cards to same-camp ally for ai owner", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[2];
+  const target = state.players[1];
+  const ally = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, target.id, STANDARD_SKILL_IDS.guojiaYiji);
+  target.isAi = true;
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "slash-yiji-ai-1", kind: "slash", suit: "spade", point: 8 }];
+  state.deck = [
+    { id: "yiji-ai-draw-1", kind: "dodge", suit: "heart", point: 2 },
+    { id: "yiji-ai-draw-2", kind: "peach", suit: "diamond", point: 7 }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-yiji-ai-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hand.length, 0);
+  assert.ok(ally.hand.some((card) => card.id === "yiji-ai-draw-1"));
+  assert.ok(ally.hand.some((card) => card.id === "yiji-ai-draw-2"));
+});
+
+/**
  * 验证八卦阵判定为红色时可视为打出【闪】抵消【杀】。
  */
 test("eight diagram should auto-dodge slash on red judgment", () => {
