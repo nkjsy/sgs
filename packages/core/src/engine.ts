@@ -10,7 +10,27 @@ import {
   TurnAction
 } from "./types";
 
-const EQUIPMENT_KINDS: CardKind[] = ["weapon_blade", "horse_plus", "horse_minus"];
+const EQUIPMENT_KINDS: CardKind[] = [
+  "weapon_crossbow",
+  "weapon_double_sword",
+  "weapon_qinggang_sword",
+  "weapon_blade",
+  "weapon_spear",
+  "weapon_axe",
+  "weapon_halberd",
+  "weapon_kylin_bow",
+  "weapon_ice_sword",
+  "armor_eight_diagram",
+  "armor_renwang_shield",
+  "horse_jueying",
+  "horse_dilu",
+  "horse_zhuahuangfeidian",
+  "horse_chitu",
+  "horse_dayuan",
+  "horse_zixing",
+  "horse_plus",
+  "horse_minus"
+];
 const DELAYED_TRICK_KINDS: CardKind[] = ["indulgence", "lightning"];
 
 /**
@@ -32,6 +52,7 @@ export function createInitialGame(seed: number): GameState {
     isAi: index !== 0,
     equipment: {
       weapon: null,
+      armor: null,
       horsePlus: null,
       horseMinus: null
     },
@@ -999,30 +1020,39 @@ function transferLightning(state: GameState, currentPlayerId: string, lightning:
  * @param card 待装备的卡牌。
  */
 function equipCard(state: GameState, actor: PlayerState, card: Card): void {
-  if (card.kind === "weapon_blade") {
+  if (isWeaponKind(card.kind)) {
     if (actor.equipment.weapon) {
       state.discard.push(actor.equipment.weapon);
     }
     actor.equipment.weapon = card;
-    pushEvent(state, "equip", `${actor.name} 装备了武器（攻击范围+1）`);
+    pushEvent(state, "equip", `${actor.name} 装备了${getEquipmentDisplayName(card.kind)}`);
     return;
   }
 
-  if (card.kind === "horse_plus") {
+  if (isArmorKind(card.kind)) {
+    if (actor.equipment.armor) {
+      state.discard.push(actor.equipment.armor);
+    }
+    actor.equipment.armor = card;
+    pushEvent(state, "equip", `${actor.name} 装备了${getEquipmentDisplayName(card.kind)}`);
+    return;
+  }
+
+  if (isHorsePlusKind(card.kind)) {
     if (actor.equipment.horsePlus) {
       state.discard.push(actor.equipment.horsePlus);
     }
     actor.equipment.horsePlus = card;
-    pushEvent(state, "equip", `${actor.name} 装备了+1坐骑`);
+    pushEvent(state, "equip", `${actor.name} 装备了${getEquipmentDisplayName(card.kind)}`);
     return;
   }
 
-  if (card.kind === "horse_minus") {
+  if (isHorseMinusKind(card.kind)) {
     if (actor.equipment.horseMinus) {
       state.discard.push(actor.equipment.horseMinus);
     }
     actor.equipment.horseMinus = card;
-    pushEvent(state, "equip", `${actor.name} 装备了-1坐骑`);
+    pushEvent(state, "equip", `${actor.name} 装备了${getEquipmentDisplayName(card.kind)}`);
   }
 }
 
@@ -1147,11 +1177,11 @@ function isInAttackRange(state: GameState, fromId: string, toId: string): boolea
  */
 function getAttackRange(state: GameState, playerId: string): number {
   const player = requireAlivePlayer(state, playerId);
-  let range = 1;
-  if (player.equipment.weapon?.kind === "weapon_blade") {
-    range += 1;
+  if (!player.equipment.weapon) {
+    return 1;
   }
-  return range;
+
+  return getWeaponRange(player.equipment.weapon.kind);
 }
 
 /**
@@ -1265,6 +1295,10 @@ function clearDeadPlayerCards(state: GameState, target: PlayerState): void {
   if (target.equipment.weapon) {
     state.discard.push(target.equipment.weapon);
     target.equipment.weapon = null;
+  }
+  if (target.equipment.armor) {
+    state.discard.push(target.equipment.armor);
+    target.equipment.armor = null;
   }
   if (target.equipment.horsePlus) {
     state.discard.push(target.equipment.horsePlus);
@@ -1446,6 +1480,75 @@ function isEquipmentKind(kind: CardKind): boolean {
   return EQUIPMENT_KINDS.includes(kind);
 }
 
+function isWeaponKind(kind: CardKind): boolean {
+  return (
+    kind === "weapon_crossbow" ||
+    kind === "weapon_double_sword" ||
+    kind === "weapon_qinggang_sword" ||
+    kind === "weapon_blade" ||
+    kind === "weapon_spear" ||
+    kind === "weapon_axe" ||
+    kind === "weapon_halberd" ||
+    kind === "weapon_kylin_bow" ||
+    kind === "weapon_ice_sword"
+  );
+}
+
+function isArmorKind(kind: CardKind): boolean {
+  return kind === "armor_eight_diagram" || kind === "armor_renwang_shield";
+}
+
+function isHorsePlusKind(kind: CardKind): boolean {
+  return kind === "horse_plus" || kind === "horse_jueying" || kind === "horse_dilu" || kind === "horse_zhuahuangfeidian";
+}
+
+function isHorseMinusKind(kind: CardKind): boolean {
+  return kind === "horse_minus" || kind === "horse_chitu" || kind === "horse_dayuan" || kind === "horse_zixing";
+}
+
+function getWeaponRange(kind: CardKind): number {
+  if (kind === "weapon_crossbow") {
+    return 1;
+  }
+  if (kind === "weapon_double_sword" || kind === "weapon_qinggang_sword" || kind === "weapon_ice_sword") {
+    return 2;
+  }
+  if (kind === "weapon_blade" || kind === "weapon_spear" || kind === "weapon_axe") {
+    return 3;
+  }
+  if (kind === "weapon_halberd") {
+    return 4;
+  }
+  if (kind === "weapon_kylin_bow") {
+    return 5;
+  }
+
+  return 1;
+}
+
+function getEquipmentDisplayName(kind: CardKind): string {
+  if (kind === "weapon_crossbow") return "诸葛连弩";
+  if (kind === "weapon_double_sword") return "雌雄双股剑";
+  if (kind === "weapon_qinggang_sword") return "青釭剑";
+  if (kind === "weapon_blade") return "青龙偃月刀（简化）";
+  if (kind === "weapon_spear") return "丈八蛇矛";
+  if (kind === "weapon_axe") return "贯石斧";
+  if (kind === "weapon_halberd") return "方天画戟";
+  if (kind === "weapon_kylin_bow") return "麒麟弓";
+  if (kind === "weapon_ice_sword") return "寒冰剑";
+  if (kind === "armor_eight_diagram") return "八卦阵";
+  if (kind === "armor_renwang_shield") return "仁王盾";
+  if (kind === "horse_jueying") return "+1坐骑（绝影）";
+  if (kind === "horse_dilu") return "+1坐骑（的卢）";
+  if (kind === "horse_zhuahuangfeidian") return "+1坐骑（爪黄飞电）";
+  if (kind === "horse_chitu") return "-1坐骑（赤兔）";
+  if (kind === "horse_dayuan") return "-1坐骑（大宛）";
+  if (kind === "horse_zixing") return "-1坐骑（紫骍）";
+  if (kind === "horse_plus") return "+1坐骑";
+  if (kind === "horse_minus") return "-1坐骑";
+  return "装备牌";
+}
+
 /**
  * 判断卡牌是否属于延时类锦囊。
  *
@@ -1484,6 +1587,10 @@ function hasDelayedTrick(player: PlayerState, kind: Extract<CardKind, "indulgenc
  * @returns 花色。
  */
 function getCardSuit(card: Card): "spade" | "heart" | "club" | "diamond" {
+  if (card.suit) {
+    return card.suit;
+  }
+
   const seq = getCardSequence(card);
   const mod = seq % 4;
   if (mod === 0) {
@@ -1505,6 +1612,10 @@ function getCardSuit(card: Card): "spade" | "heart" | "club" | "diamond" {
  * @returns 点数。
  */
 function getCardPoint(card: Card): number {
+  if (card.point && card.point >= 1 && card.point <= 13) {
+    return card.point;
+  }
+
   return (getCardSequence(card) % 13) + 1;
 }
 

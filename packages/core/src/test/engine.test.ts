@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createDeck } from "../cards";
 import { applyAction, createInitialGame, getLegalActions, stepPhase } from "../engine";
 import { PlayCardAction } from "../types";
 
@@ -12,6 +13,15 @@ test("createInitialGame should initialize 5 players and 4 cards each", () => {
   for (const player of state.players) {
     assert.equal(player.hand.length, 4);
   }
+});
+
+/**
+ * 验证默认牌堆采用标准身份场 108 张口径，并包含显式花色点数。
+ */
+test("createDeck should return standard identity 108-card blueprint with suit and point", () => {
+  const deck = createDeck();
+  assert.equal(deck.length, 108);
+  assert.ok(deck.every((card) => card.suit && card.point && card.point >= 1 && card.point <= 13));
 });
 
 /**

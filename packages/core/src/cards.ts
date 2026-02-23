@@ -1,93 +1,185 @@
-import { Card, CardKind } from "./types";
-import { isCardKindInCurrentScope } from "./standard-scope";
+import { Card, CardKind, CardSuit } from "./types";
+import { CURRENT_STANDARD_IDENTITY_CARD_KINDS, isCardKindInCurrentScope } from "./standard-scope";
+
+interface DeckEntry {
+  kind: CardKind;
+  suit: CardSuit;
+  point: number;
+}
 
 /**
- * 根据预设分布生成一副用于 MVP 测试的卡牌堆。
+ * 根据预设分布生成一副牌堆。
  *
- * 当前分布并非官方完整牌堆，仅用于规则迭代阶段：
- * - 杀 30
- * - 闪 20
- * - 桃 12
- * - 过河拆桥 8
- * - 顺手牵羊 8
- * - 无懈可击 6
- * - 决斗 6
- * - 南蛮入侵 4
- * - 万箭齐发 4
- * - 桃园结义 4
- * - 五谷丰登 4
- * - 无中生有 4
- * - 借刀杀人 4
- * - 武器（攻击范围+1） 4
- * - +1坐骑 4
- * - -1坐骑 4
- * - 乐不思蜀 4
- * - 闪电 2
+ * 默认（totalPerKind=24）返回“标准版身份场”官方口径牌堆（当前采用标准+EX并入的108张口径）：
+ * - 含显式花色与点数。
+ * - 含标准装备牌名壳（暂未实现全部装备技能）。
  *
- * @param totalPerKind 兼容参数，若传入则会覆盖每种牌数量为同一值。
+ * 兼容模式（totalPerKind!=24）用于测试：
+ * - 按当前范围内每种牌等量生成。
+ * - 花色与点数按固定模式轮转。
+ *
+ * @param totalPerKind 兼容参数，传入非 24 时启用等量测试牌堆。
  * @returns 未洗牌的卡牌列表。
  */
 export function createDeck(totalPerKind = 24): Card[] {
-  const deck: Card[] = [];
-  const distribution: Array<{ kind: CardKind; count: number }> = totalPerKind === 24
-    ? [
-      { kind: "slash", count: 30 },
-      { kind: "dodge", count: 20 },
-      { kind: "peach", count: 12 },
-      { kind: "dismantle", count: 8 },
-      { kind: "snatch", count: 8 },
-      { kind: "nullify", count: 6 },
-      { kind: "duel", count: 6 },
-      { kind: "barbarian", count: 4 },
-      { kind: "archery", count: 4 },
-      { kind: "taoyuan", count: 4 },
-      { kind: "harvest", count: 4 },
-      { kind: "ex_nihilo", count: 4 },
-      { kind: "collateral", count: 4 },
-      { kind: "weapon_blade", count: 4 },
-      { kind: "horse_plus", count: 4 },
-      { kind: "horse_minus", count: 4 },
-      { kind: "indulgence", count: 4 },
-      { kind: "lightning", count: 2 }
-    ]
-    : [
-      { kind: "slash", count: totalPerKind },
-      { kind: "dodge", count: totalPerKind },
-      { kind: "peach", count: totalPerKind },
-      { kind: "dismantle", count: totalPerKind },
-      { kind: "snatch", count: totalPerKind },
-      { kind: "nullify", count: totalPerKind },
-      { kind: "duel", count: totalPerKind },
-      { kind: "barbarian", count: totalPerKind },
-      { kind: "archery", count: totalPerKind },
-      { kind: "taoyuan", count: totalPerKind },
-      { kind: "harvest", count: totalPerKind },
-      { kind: "ex_nihilo", count: totalPerKind },
-      { kind: "collateral", count: totalPerKind },
-      { kind: "weapon_blade", count: totalPerKind },
-      { kind: "horse_plus", count: totalPerKind },
-      { kind: "horse_minus", count: totalPerKind },
-      { kind: "indulgence", count: totalPerKind },
-      { kind: "lightning", count: totalPerKind }
-    ];
+  if (totalPerKind !== 24) {
+    return createUniformDeck(totalPerKind);
+  }
 
-  for (const entry of distribution) {
+  const blueprint = getStandardIdentityOfficialBlueprint();
+  for (const entry of blueprint) {
     if (!isCardKindInCurrentScope(entry.kind)) {
       throw new Error(`当前范围仅支持标准版身份场，检测到超出范围牌种: ${entry.kind}`);
     }
   }
 
   let seq = 1;
+  return blueprint.map((entry) => {
+    const card: Card = {
+      id: `${entry.kind}-${entry.suit}-${entry.point}-${seq}`,
+      kind: entry.kind,
+      suit: entry.suit,
+      point: entry.point
+    };
+    seq += 1;
+    return card;
+  });
+}
 
-  for (const entry of distribution) {
-    for (let index = 0; index < entry.count; index += 1) {
+function createUniformDeck(totalPerKind: number): Card[] {
+  const deck: Card[] = [];
+  const kinds = [...CURRENT_STANDARD_IDENTITY_CARD_KINDS.values()];
+  const suits: CardSuit[] = ["spade", "heart", "club", "diamond"];
+  let seq = 1;
+
+  for (const kind of kinds) {
+    for (let index = 0; index < totalPerKind; index += 1) {
+      const point = (index % 13) + 1;
+      const suit = suits[index % suits.length];
       deck.push({
-        id: `${entry.kind}-${seq}`,
-        kind: entry.kind
+        id: `${kind}-${suit}-${point}-${seq}`,
+        kind,
+        suit,
+        point
       });
       seq += 1;
     }
   }
+
+  return deck;
+}
+
+function getStandardIdentityOfficialBlueprint(): DeckEntry[] {
+  const deck: DeckEntry[] = [];
+
+  const add = (kind: CardKind, suit: CardSuit, point: number, count = 1): void => {
+    for (let index = 0; index < count; index += 1) {
+      deck.push({ kind, suit, point });
+    }
+  };
+
+  add("slash", "spade", 7);
+  add("slash", "spade", 8, 2);
+  add("slash", "spade", 9, 2);
+  add("slash", "spade", 10, 2);
+  add("slash", "club", 2);
+  add("slash", "club", 3);
+  add("slash", "club", 4);
+  add("slash", "club", 5);
+  add("slash", "club", 6);
+  add("slash", "club", 7);
+  add("slash", "club", 8, 2);
+  add("slash", "club", 9, 2);
+  add("slash", "club", 10, 2);
+  add("slash", "club", 11, 2);
+  add("slash", "heart", 10, 2);
+  add("slash", "heart", 11);
+  add("slash", "diamond", 6);
+  add("slash", "diamond", 7);
+  add("slash", "diamond", 8);
+  add("slash", "diamond", 9);
+  add("slash", "diamond", 10);
+  add("slash", "diamond", 13);
+
+  add("dodge", "heart", 2, 2);
+  add("dodge", "heart", 13);
+  add("dodge", "diamond", 2, 2);
+  add("dodge", "diamond", 3);
+  add("dodge", "diamond", 4);
+  add("dodge", "diamond", 5);
+  add("dodge", "diamond", 6);
+  add("dodge", "diamond", 7);
+  add("dodge", "diamond", 8);
+  add("dodge", "diamond", 9);
+  add("dodge", "diamond", 10);
+  add("dodge", "diamond", 11, 2);
+
+  add("peach", "heart", 3);
+  add("peach", "heart", 4);
+  add("peach", "heart", 6);
+  add("peach", "heart", 7);
+  add("peach", "heart", 8);
+  add("peach", "heart", 9);
+  add("peach", "heart", 12);
+  add("peach", "diamond", 12);
+
+  add("weapon_crossbow", "club", 1);
+  add("weapon_crossbow", "diamond", 1);
+  add("weapon_double_sword", "spade", 2);
+  add("weapon_qinggang_sword", "spade", 6);
+  add("weapon_blade", "spade", 5);
+  add("weapon_spear", "spade", 12);
+  add("weapon_axe", "diamond", 5);
+  add("weapon_halberd", "diamond", 12);
+  add("weapon_kylin_bow", "heart", 5);
+  add("armor_eight_diagram", "spade", 2);
+  add("armor_eight_diagram", "club", 2);
+  add("horse_jueying", "spade", 5);
+  add("horse_dilu", "club", 5);
+  add("horse_zhuahuangfeidian", "heart", 13);
+  add("horse_chitu", "heart", 5);
+  add("horse_dayuan", "spade", 13);
+  add("horse_zixing", "diamond", 13);
+
+  add("harvest", "heart", 3);
+  add("harvest", "heart", 4);
+  add("taoyuan", "heart", 1);
+  add("barbarian", "spade", 7);
+  add("barbarian", "spade", 13);
+  add("barbarian", "club", 7);
+  add("archery", "heart", 1);
+  add("duel", "spade", 1);
+  add("duel", "club", 1);
+  add("duel", "diamond", 1);
+  add("ex_nihilo", "heart", 7);
+  add("ex_nihilo", "heart", 8);
+  add("ex_nihilo", "heart", 9);
+  add("ex_nihilo", "heart", 11);
+  add("snatch", "spade", 3);
+  add("snatch", "spade", 4);
+  add("snatch", "spade", 11);
+  add("snatch", "diamond", 3);
+  add("snatch", "diamond", 4);
+  add("dismantle", "spade", 3);
+  add("dismantle", "spade", 4);
+  add("dismantle", "spade", 12);
+  add("dismantle", "club", 3);
+  add("dismantle", "club", 4);
+  add("dismantle", "heart", 12);
+  add("collateral", "club", 12);
+  add("collateral", "club", 13);
+  add("nullify", "spade", 11);
+  add("nullify", "club", 12);
+  add("nullify", "club", 13);
+  add("indulgence", "spade", 6);
+  add("indulgence", "club", 6);
+  add("indulgence", "heart", 6);
+  add("lightning", "spade", 1);
+
+  add("weapon_ice_sword", "spade", 2);
+  add("armor_renwang_shield", "club", 2);
+  add("lightning", "heart", 12);
+  add("nullify", "diamond", 12);
 
   return deck;
 }

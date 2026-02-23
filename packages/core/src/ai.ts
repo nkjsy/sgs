@@ -154,15 +154,32 @@ export function chooseAiAction(context: AiContext): TurnAction {
       return false;
     }
 
-    if (card.kind === "weapon_blade") {
-      return context.actor.equipment.weapon?.kind !== "weapon_blade";
+    if (
+      card.kind === "weapon_crossbow" ||
+      card.kind === "weapon_double_sword" ||
+      card.kind === "weapon_qinggang_sword" ||
+      card.kind === "weapon_blade" ||
+      card.kind === "weapon_spear" ||
+      card.kind === "weapon_axe" ||
+      card.kind === "weapon_halberd" ||
+      card.kind === "weapon_kylin_bow" ||
+      card.kind === "weapon_ice_sword"
+    ) {
+      return !context.actor.equipment.weapon;
     }
-    if (card.kind === "horse_plus") {
+
+    if (card.kind === "armor_eight_diagram" || card.kind === "armor_renwang_shield") {
+      return !context.actor.equipment.armor;
+    }
+
+    if (card.kind === "horse_plus" || card.kind === "horse_jueying" || card.kind === "horse_dilu" || card.kind === "horse_zhuahuangfeidian") {
       return !context.actor.equipment.horsePlus;
     }
-    if (card.kind === "horse_minus") {
+
+    if (card.kind === "horse_minus" || card.kind === "horse_chitu" || card.kind === "horse_dayuan" || card.kind === "horse_zixing") {
       return !context.actor.equipment.horseMinus;
     }
+
     return false;
   });
 

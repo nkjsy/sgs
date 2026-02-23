@@ -8,6 +8,8 @@ export type Identity = "lord" | "loyalist" | "rebel" | "renegade";
  */
 export type Phase = "judge" | "draw" | "play" | "discard" | "end";
 
+export type CardSuit = "spade" | "heart" | "club" | "diamond";
+
 /**
  * 定义当前可用的基础卡牌类型。
  */
@@ -25,7 +27,23 @@ export type CardKind =
   | "harvest"
   | "ex_nihilo"
   | "collateral"
+  | "weapon_crossbow"
+  | "weapon_double_sword"
+  | "weapon_qinggang_sword"
   | "weapon_blade"
+  | "weapon_spear"
+  | "weapon_axe"
+  | "weapon_halberd"
+  | "weapon_kylin_bow"
+  | "weapon_ice_sword"
+  | "armor_eight_diagram"
+  | "armor_renwang_shield"
+  | "horse_jueying"
+  | "horse_dilu"
+  | "horse_zhuahuangfeidian"
+  | "horse_chitu"
+  | "horse_dayuan"
+  | "horse_zixing"
   | "horse_plus"
   | "horse_minus"
   | "indulgence"
@@ -37,6 +55,8 @@ export type CardKind =
 export interface EquipmentState {
   /** 武器槽。 */
   weapon: Card | null;
+  /** 防具槽。 */
+  armor: Card | null;
   /** +1 坐骑槽。 */
   horsePlus: Card | null;
   /** -1 坐骑槽。 */
@@ -59,6 +79,10 @@ export interface Card {
   id: string;
   /** 卡牌规则类型。 */
   kind: CardKind;
+  /** 卡牌花色（可选，未提供时由兼容逻辑推导）。 */
+  suit?: CardSuit;
+  /** 卡牌点数（可选，未提供时由兼容逻辑推导）。 */
+  point?: number;
 }
 
 /**
