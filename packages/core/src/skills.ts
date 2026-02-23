@@ -4,7 +4,9 @@ export const STANDARD_SKILL_IDS = {
   zhangfeiPaoxiao: "std.zhangfei.paoxiao",
   machaoMashu: "std.machao.mashu",
   guanyuWusheng: "std.guanyu.wusheng",
-  guojiaYiji: "std.guojia.yiji"
+  guojiaYiji: "std.guojia.yiji",
+  zhugeliangKongcheng: "std.zhugeliang.kongcheng",
+  lvbuWushuang: "std.lvbu.wushuang"
 } as const;
 
 export function createSkillSystemState(): SkillSystemState {

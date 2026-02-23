@@ -1888,6 +1888,128 @@ test("yiji skill should distribute drawn cards to same-camp ally for ai owner", 
 });
 
 /**
+ * 验证诸葛亮【空城】在空手时不能成为【杀】或【决斗】目标。
+ */
+test("kongcheng skill should prevent empty-hand target from slash and duel targeting", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const kongchengTarget = state.players[1];
+
+  assignSkillToPlayer(state, kongchengTarget.id, STANDARD_SKILL_IDS.zhugeliangKongcheng);
+
+  actor.hand = [
+    { id: "slash-kc-1", kind: "slash", suit: "spade", point: 7 },
+    { id: "duel-kc-1", kind: "duel", suit: "club", point: 9 }
+  ];
+  kongchengTarget.hand = [];
+
+  stepPhase(state);
+
+  const slashTargets = getLegalActions(state)
+    .filter((action): action is PlayCardAction => action.type === "play-card" && action.cardId === "slash-kc-1")
+    .map((action) => action.targetId);
+  const duelTargets = getLegalActions(state)
+    .filter((action): action is PlayCardAction => action.type === "play-card" && action.cardId === "duel-kc-1")
+    .map((action) => action.targetId);
+
+  assert.equal(slashTargets.includes(kongchengTarget.id), false);
+  assert.equal(duelTargets.includes(kongchengTarget.id), false);
+});
+
+/**
+ * 验证【空城】在空手时，强行提交的【决斗】动作会被规则兜底拒绝且手牌退回。
+ */
+test("kongcheng skill should reject forced duel action against empty-hand target", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const kongchengTarget = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, kongchengTarget.id, STANDARD_SKILL_IDS.zhugeliangKongcheng);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "duel-kc-forced-1", kind: "duel", suit: "spade", point: 1 }];
+  kongchengTarget.hand = [];
+
+  const hpBefore = kongchengTarget.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "duel-kc-forced-1",
+    targetId: kongchengTarget.id
+  });
+
+  assert.equal(kongchengTarget.hp, hpBefore);
+  assert.ok(actor.hand.some((card) => card.id === "duel-kc-forced-1"));
+  assert.equal(state.discard.some((card) => card.id === "duel-kc-forced-1"), false);
+});
+
+/**
+ * 验证吕布【无双】：其【杀】需要目标连续打出两张【闪】才能抵消。
+ */
+test("wushuang skill should require two dodges against slash", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.lvbuWushuang);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "slash-ws-1", kind: "slash", suit: "spade", point: 9 }];
+  target.hand = [{ id: "dodge-ws-only-1", kind: "dodge", suit: "heart", point: 2 }];
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-ws-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, hpBefore - 1);
+  assert.equal(target.hand.length, 0);
+});
+
+/**
+ * 验证吕布【无双】：当吕布发起【决斗】时，对方每轮需连续打出两张【杀】。
+ */
+test("wushuang skill should require two slashes from opponent in duel", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.lvbuWushuang);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "duel-ws-1", kind: "duel", suit: "club", point: 1 }];
+  target.hand = [{ id: "target-slash-ws-only-1", kind: "slash", suit: "spade", point: 7 }];
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "duel-ws-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, hpBefore - 1);
+});
+
+/**
  * 验证八卦阵判定为红色时可视为打出【闪】抵消【杀】。
  */
 test("eight diagram should auto-dodge slash on red judgment", () => {

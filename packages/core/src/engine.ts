@@ -170,7 +170,9 @@ export function getLegalActions(state: GameState): TurnAction[] {
         continue;
       }
 
-      for (const target of getAliveOpponents(state, actor.id).filter((candidate) => isInAttackRange(state, actor.id, candidate.id))) {
+      for (const target of getAliveOpponents(state, actor.id).filter(
+        (candidate) => isInAttackRange(state, actor.id, candidate.id) && canBeTargetedBySlashOrDuel(state, candidate)
+      )) {
         actions.push({
           type: "play-card",
           actorId: actor.id,
@@ -186,7 +188,9 @@ export function getLegalActions(state: GameState): TurnAction[] {
         continue;
       }
 
-      for (const target of getAliveOpponents(state, actor.id).filter((candidate) => isInAttackRange(state, actor.id, candidate.id))) {
+      for (const target of getAliveOpponents(state, actor.id).filter(
+        (candidate) => isInAttackRange(state, actor.id, candidate.id) && canBeTargetedBySlashOrDuel(state, candidate)
+      )) {
         actions.push({
           type: "play-card",
           actorId: actor.id,
@@ -224,7 +228,7 @@ export function getLegalActions(state: GameState): TurnAction[] {
     }
 
     if (card.kind === "duel") {
-      for (const target of getAliveOpponents(state, actor.id)) {
+      for (const target of getAliveOpponents(state, actor.id).filter((candidate) => canBeTargetedBySlashOrDuel(state, candidate))) {
         actions.push({
           type: "play-card",
           actorId: actor.id,
@@ -238,7 +242,9 @@ export function getLegalActions(state: GameState): TurnAction[] {
     if (card.kind === "collateral") {
       const firstTargets = getAliveOpponents(state, actor.id).filter((candidate) => candidate.equipment.weapon !== null);
       for (const firstTarget of firstTargets) {
-        const secondTargets = getAliveOpponents(state, firstTarget.id).filter((candidate) => isInAttackRange(state, firstTarget.id, candidate.id));
+        const secondTargets = getAliveOpponents(state, firstTarget.id).filter(
+          (candidate) => isInAttackRange(state, firstTarget.id, candidate.id) && canBeTargetedBySlashOrDuel(state, candidate)
+        );
         for (const secondTarget of secondTargets) {
           actions.push({
             type: "play-card",
@@ -330,7 +336,9 @@ export function getLegalActions(state: GameState): TurnAction[] {
 
   if (actor.equipment.weapon?.kind === "weapon_spear" && actor.hand.length >= 2) {
     if (state.slashUsedInTurn < 1 || hasUnlimitedSlashUsage(state, actor)) {
-      for (const target of getAliveOpponents(state, actor.id).filter((candidate) => isInAttackRange(state, actor.id, candidate.id))) {
+      for (const target of getAliveOpponents(state, actor.id).filter(
+        (candidate) => isInAttackRange(state, actor.id, candidate.id) && canBeTargetedBySlashOrDuel(state, candidate)
+      )) {
         actions.push({
           type: "play-card",
           actorId: actor.id,
@@ -504,7 +512,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
 
   if (card.kind === "slash") {
     const target = action.targetId ? getPlayerById(state, action.targetId) : null;
-    if (!target || !target.alive || target.id === actor.id) {
+    if (!target || !target.alive || target.id === actor.id || !canBeTargetedBySlashOrDuel(state, target)) {
       actor.hand.push(card);
       return;
     }
@@ -570,7 +578,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
 
   if (card.kind === "duel") {
     const target = action.targetId ? getPlayerById(state, action.targetId) : null;
-    if (!target || !target.alive || target.id === actor.id) {
+    if (!target || !target.alive || target.id === actor.id || !canBeTargetedBySlashOrDuel(state, target)) {
       actor.hand.push(card);
       return;
     }
@@ -756,14 +764,19 @@ function resolveDuel(state: GameState, sourceId: string, targetId: string): void
   let opponent = requireAlivePlayer(state, sourceId);
 
   while (current.alive && opponent.alive && !state.winner) {
-    const slash = consumeSlashLikeCard(state, current, "决斗");
-    if (!slash) {
+    const requiredSlashCount = hasSkill(state, opponent.id, STANDARD_SKILL_IDS.lvbuWushuang) ? 2 : 1;
+    const slashCards = consumeRequiredSlashLikeCards(state, current, requiredSlashCount, "决斗");
+    if (slashCards.length < requiredSlashCount) {
       dealDamage(state, opponent.id, current.id, 1);
       return;
     }
 
-    state.discard.push(slash);
-    pushEvent(state, "response", `${current.name} 在决斗中打出杀`);
+    state.discard.push(...slashCards);
+    pushEvent(
+      state,
+      "response",
+      `${current.name} 在决斗中打出 ${requiredSlashCount} 张杀`
+    );
 
     const nextCurrent = opponent;
     const nextOpponent = current;
@@ -804,17 +817,9 @@ function resolveSlashOnTarget(
     return;
   }
 
-  if (!armorIgnored && tryAutoDodgeWithEightDiagram(state, target)) {
-    if (shouldDiscardSlash) {
-      state.discard.push(slashCard);
-    }
-    return;
-  }
-
-  const dodgeCard = consumeFirstCardByKind(target, "dodge");
-  if (dodgeCard) {
-    state.discard.push(dodgeCard);
-    pushEvent(state, "response", `${target.name} 打出闪，抵消${slashLabel}`);
+  const requiredDodgeCount = hasSkill(state, source.id, STANDARD_SKILL_IDS.lvbuWushuang) ? 2 : 1;
+  const dodged = consumeRequiredDodgeResponses(state, target, requiredDodgeCount, armorIgnored, slashLabel);
+  if (dodged) {
 
     if (source.equipment.weapon?.kind === "weapon_axe" && source.hand.length >= 2) {
       const discardA = source.hand.shift() as Card;
@@ -1798,6 +1803,14 @@ function hasUnlimitedSlashUsage(state: GameState, player: PlayerState): boolean 
   return player.equipment.weapon?.kind === "weapon_crossbow" || hasSkill(state, player.id, STANDARD_SKILL_IDS.zhangfeiPaoxiao);
 }
 
+function canBeTargetedBySlashOrDuel(state: GameState, target: PlayerState): boolean {
+  if (hasSkill(state, target.id, STANDARD_SKILL_IDS.zhugeliangKongcheng) && target.hand.length === 0) {
+    return false;
+  }
+
+  return true;
+}
+
 function removeCardFromHand(player: PlayerState, cardId: string): Card | undefined {
   const index = player.hand.findIndex((card) => card.id === cardId);
   if (index < 0) {
@@ -1848,6 +1861,58 @@ function consumeSlashLikeCard(state: GameState, player: PlayerState, contextName
   }
 
   return undefined;
+}
+
+function consumeRequiredSlashLikeCards(state: GameState, player: PlayerState, count: number, contextName: string): Card[] {
+  const consumed: Card[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const slash = consumeSlashLikeCard(state, player, contextName);
+    if (!slash) {
+      break;
+    }
+    consumed.push(slash);
+  }
+
+  return consumed;
+}
+
+function consumeRequiredDodgeResponses(
+  state: GameState,
+  target: PlayerState,
+  requiredCount: number,
+  armorIgnored: boolean,
+  slashLabel: string
+): boolean {
+  let respondedCount = 0;
+  for (let index = 0; index < requiredCount; index += 1) {
+    if (!armorIgnored && tryAutoDodgeWithEightDiagram(state, target)) {
+      respondedCount += 1;
+      continue;
+    }
+
+    const dodgeCard = consumeFirstCardByKind(target, "dodge");
+    if (!dodgeCard) {
+      break;
+    }
+
+    state.discard.push(dodgeCard);
+    respondedCount += 1;
+  }
+
+  if (respondedCount < requiredCount) {
+    if (requiredCount > 1) {
+      pushEvent(state, "response", `${target.name} 未能连续打出 ${requiredCount} 张闪，无法抵消${slashLabel}`);
+    }
+    return false;
+  }
+
+  if (requiredCount > 1) {
+    pushEvent(state, "response", `${target.name} 连续打出 ${requiredCount} 张闪，抵消${slashLabel}`);
+  } else {
+    pushEvent(state, "response", `${target.name} 打出闪，抵消${slashLabel}`);
+  }
+
+  return true;
 }
 
 function getPlayerById(state: GameState, playerId: string): PlayerState | undefined {
