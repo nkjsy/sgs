@@ -1,4 +1,5 @@
 import { createDeck, shuffleWithSeed } from "./cards";
+import { createSkillSystemState, emitSkillEvent } from "./skills";
 import {
   Card,
   CardKind,
@@ -83,7 +84,8 @@ export function createInitialGame(seed: number, options: CreateInitialGameOption
     skipPlayPhaseForCurrentTurn: false,
     winner: null,
     seed,
-    nullifyResponsePolicy: options.nullifyResponsePolicy ?? "camp-first"
+    nullifyResponsePolicy: options.nullifyResponsePolicy ?? "camp-first",
+    skillSystem: createSkillSystemState()
   };
 
   for (const player of players) {
@@ -1748,7 +1750,9 @@ function requireAlivePlayer(state: GameState, playerId: string): PlayerState {
 }
 
 function pushEvent(state: GameState, type: string, message: string): void {
-  state.events.push({ type, message });
+  const event = { type, message };
+  state.events.push(event);
+  emitSkillEvent(state, event);
 }
 
 /**

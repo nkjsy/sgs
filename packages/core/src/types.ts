@@ -12,6 +12,24 @@ export type Phase = "judge" | "draw" | "play" | "discard" | "end";
 export type CardSuit = "spade" | "heart" | "club" | "diamond";
 export type NullifyResponsePolicy = "camp-first" | "seat-order";
 
+export interface SkillEventContext {
+  state: GameState;
+  event: GameEvent;
+  owner: PlayerState;
+}
+
+export type SkillEventHandler = (context: SkillEventContext) => void;
+
+export interface SkillDefinition {
+  id: string;
+  onEvent?: SkillEventHandler;
+}
+
+export interface SkillSystemState {
+  definitions: Record<string, SkillDefinition>;
+  playerSkills: Record<string, string[]>;
+}
+
 /**
  * 定义当前可用的基础卡牌类型。
  */
@@ -184,6 +202,8 @@ export interface GameState {
   seed: number;
   /** 无懈响应优先级策略。 */
   nullifyResponsePolicy: NullifyResponsePolicy;
+  /** 武将技能系统运行态。 */
+  skillSystem: SkillSystemState;
 }
 
 /**
