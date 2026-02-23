@@ -2,6 +2,7 @@
  * 定义游戏内可用的身份类型。
  */
 export type Identity = "lord" | "loyalist" | "rebel" | "renegade";
+export type Gender = "male" | "female";
 
 /**
  * 定义当前玩家回合所处阶段。
@@ -95,6 +96,8 @@ export interface PlayerState {
   name: string;
   /** 身份类型。 */
   identity: Identity;
+  /** 性别（用于部分装备/技能判定）。 */
+  gender: Gender;
   /** 当前体力值。 */
   hp: number;
   /** 最大体力值。 */

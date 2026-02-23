@@ -32,6 +32,7 @@ const EQUIPMENT_KINDS: CardKind[] = [
   "horse_minus"
 ];
 const DELAYED_TRICK_KINDS: CardKind[] = ["indulgence", "lightning"];
+const VIRTUAL_SPEAR_SLASH_CARD_ID = "__virtual_spear_slash__";
 
 /**
  * 创建一局 5 人身份局的初始状态。
@@ -41,10 +42,12 @@ const DELAYED_TRICK_KINDS: CardKind[] = ["indulgence", "lightning"];
  */
 export function createInitialGame(seed: number): GameState {
   const identities: Identity[] = ["lord", "loyalist", "rebel", "rebel", "renegade"];
+  const genders: Array<"male" | "female"> = ["male", "female", "male", "female", "male"];
   const players: PlayerState[] = identities.map((identity, index) => ({
     id: `P${index + 1}`,
     name: index === 0 ? "你" : `AI-${index}`,
     identity,
+    gender: genders[index],
     hp: identity === "lord" ? 5 : 4,
     maxHp: identity === "lord" ? 5 : 4,
     hand: [],
@@ -299,6 +302,19 @@ export function getLegalActions(state: GameState): TurnAction[] {
     }
   }
 
+  if (actor.equipment.weapon?.kind === "weapon_spear" && actor.hand.length >= 2) {
+    if (state.slashUsedInTurn < 1 || hasUnlimitedSlashUsage(actor)) {
+      for (const target of getAliveOpponents(state, actor.id).filter((candidate) => isInAttackRange(state, actor.id, candidate.id))) {
+        actions.push({
+          type: "play-card",
+          actorId: actor.id,
+          cardId: VIRTUAL_SPEAR_SLASH_CARD_ID,
+          targetId: target.id
+        });
+      }
+    }
+  }
+
   actions.push({ type: "end-play-phase", actorId: actor.id });
   return actions;
 }
@@ -407,7 +423,27 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
     return;
   }
 
-  const card = removeCardFromHand(actor, action.cardId);
+  let card: Card | undefined;
+  if (action.cardId === VIRTUAL_SPEAR_SLASH_CARD_ID) {
+    if (actor.equipment.weapon?.kind !== "weapon_spear" || actor.hand.length < 2) {
+      return;
+    }
+
+    const subA = actor.hand.shift() as Card;
+    const subB = actor.hand.shift() as Card;
+    state.discard.push(subA, subB);
+    pushEvent(state, "equip", `${actor.name} 发动丈八蛇矛，将两张手牌当杀使用`);
+
+    card = {
+      id: `${VIRTUAL_SPEAR_SLASH_CARD_ID}-${state.turnCount}-${state.events.length}`,
+      kind: "slash",
+      suit: "spade",
+      point: 7
+    };
+  } else {
+    card = removeCardFromHand(actor, action.cardId);
+  }
+
   if (!card) {
     return;
   }
@@ -436,7 +472,13 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
     state.slashUsedInTurn += 1;
 
     pushEvent(state, "card", `${actor.name} 对 ${target.name} 使用杀`);
-    resolveSlashOnTarget(state, actor, target, card);
+    const slashTargets = getSlashTargetsForResolution(state, actor, target);
+    for (const slashTarget of slashTargets) {
+      resolveSlashOnTarget(state, actor, slashTarget, card);
+      if (state.winner) {
+        break;
+      }
+    }
     return;
   }
 
@@ -525,7 +567,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
       return;
     }
 
-    const slash = consumeFirstCardByKind(weaponHolder, "slash");
+    const slash = consumeSlashLikeCard(state, weaponHolder, "借刀杀人");
     if (slash) {
       pushEvent(state, "response", `${weaponHolder.name} 被迫对 ${slashTarget.name} 使用杀`);
       resolveSlashOnTarget(state, weaponHolder, slashTarget, slash, "借刀杀人的杀");
@@ -619,7 +661,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
       }
 
       if (card.kind === "barbarian") {
-        const slash = consumeFirstCardByKind(target, "slash");
+        const slash = consumeSlashLikeCard(state, target, "南蛮入侵");
         if (slash) {
           state.discard.push(slash);
           pushEvent(state, "response", `${target.name} 打出杀响应南蛮入侵`);
@@ -667,7 +709,7 @@ function resolveDuel(state: GameState, sourceId: string, targetId: string): void
   let opponent = requireAlivePlayer(state, sourceId);
 
   while (current.alive && opponent.alive && !state.winner) {
-    const slash = consumeFirstCardByKind(current, "slash");
+    const slash = consumeSlashLikeCard(state, current, "决斗");
     if (!slash) {
       dealDamage(state, opponent.id, current.id, 1);
       return;
@@ -690,6 +732,17 @@ function resolveSlashOnTarget(
   slashCard: Card,
   slashLabel = "杀"
 ): void {
+  if (source.equipment.weapon?.kind === "weapon_double_sword" && source.gender !== target.gender) {
+    if (target.hand.length > 0) {
+      const discarded = target.hand.shift() as Card;
+      state.discard.push(discarded);
+      pushEvent(state, "equip", `${source.name} 发动雌雄双股剑，${target.name} 弃置了 1 张手牌`);
+    } else {
+      drawCards(state, source.id, 1);
+      pushEvent(state, "equip", `${source.name} 发动雌雄双股剑，摸了 1 张牌`);
+    }
+  }
+
   const armorIgnored = source.equipment.weapon?.kind === "weapon_qinggang_sword";
   if (armorIgnored && target.equipment.armor) {
     pushEvent(state, "equip", `${source.name} 的青釭剑无视 ${target.name} 的防具`);
@@ -710,12 +763,135 @@ function resolveSlashOnTarget(
   if (dodgeCard) {
     state.discard.push(dodgeCard);
     pushEvent(state, "response", `${target.name} 打出闪，抵消${slashLabel}`);
+
+    if (source.equipment.weapon?.kind === "weapon_axe" && source.hand.length >= 2) {
+      const discardA = source.hand.shift() as Card;
+      const discardB = source.hand.shift() as Card;
+      state.discard.push(discardA, discardB);
+      pushEvent(state, "equip", `${source.name} 发动贯石斧，弃置两张手牌令${slashLabel}仍然生效`);
+      dealDamage(state, source.id, target.id, 1);
+      state.discard.push(slashCard);
+      return;
+    }
+
+    if (source.equipment.weapon?.kind === "weapon_blade") {
+      const followSlash = consumeSlashLikeCard(state, source, "青龙偃月刀");
+      if (followSlash) {
+        pushEvent(state, "equip", `${source.name} 发动青龙偃月刀，对 ${target.name} 追加使用一张杀`);
+        state.discard.push(slashCard);
+        resolveSlashOnTarget(state, source, target, followSlash, "青龙偃月刀追击的杀");
+        return;
+      }
+    }
+
     state.discard.push(slashCard);
     return;
   }
 
+  if (source.equipment.weapon?.kind === "weapon_ice_sword" && hasCardForIceSword(target)) {
+    const first = discardOneCardForIceSword(state, target);
+    const second = discardOneCardForIceSword(state, target);
+    if (first || second) {
+      pushEvent(state, "equip", `${source.name} 发动寒冰剑，防止了本次伤害并弃置了 ${target.name} 的牌`);
+      state.discard.push(slashCard);
+      return;
+    }
+  }
+
   dealDamage(state, source.id, target.id, 1);
+  if (source.equipment.weapon?.kind === "weapon_kylin_bow") {
+    tryDiscardHorseByKylinBow(state, source, target);
+  }
   state.discard.push(slashCard);
+}
+
+function hasCardForIceSword(target: PlayerState): boolean {
+  return (
+    target.hand.length > 0 ||
+    target.equipment.weapon !== null ||
+    target.equipment.armor !== null ||
+    target.equipment.horsePlus !== null ||
+    target.equipment.horseMinus !== null
+  );
+}
+
+function discardOneCardForIceSword(state: GameState, target: PlayerState): Card | undefined {
+  if (target.hand.length > 0) {
+    const card = target.hand.shift() as Card;
+    state.discard.push(card);
+    return card;
+  }
+
+  if (target.equipment.weapon) {
+    const card = target.equipment.weapon;
+    target.equipment.weapon = null;
+    state.discard.push(card);
+    return card;
+  }
+
+  if (target.equipment.armor) {
+    const card = target.equipment.armor;
+    target.equipment.armor = null;
+    state.discard.push(card);
+    return card;
+  }
+
+  if (target.equipment.horsePlus) {
+    const card = target.equipment.horsePlus;
+    target.equipment.horsePlus = null;
+    state.discard.push(card);
+    return card;
+  }
+
+  if (target.equipment.horseMinus) {
+    const card = target.equipment.horseMinus;
+    target.equipment.horseMinus = null;
+    state.discard.push(card);
+    return card;
+  }
+
+  return undefined;
+}
+
+function getSlashTargetsForResolution(state: GameState, source: PlayerState, primaryTarget: PlayerState): PlayerState[] {
+  const targets: PlayerState[] = [primaryTarget];
+
+  if (source.equipment.weapon?.kind !== "weapon_halberd") {
+    return targets;
+  }
+
+  if (source.hand.length !== 0) {
+    return targets;
+  }
+
+  const extras = getAliveOpponents(state, source.id)
+    .filter((candidate) => candidate.id !== primaryTarget.id && isInAttackRange(state, source.id, candidate.id))
+    .sort((left, right) => left.hp - right.hp)
+    .slice(0, 2);
+
+  if (extras.length > 0) {
+    pushEvent(state, "equip", `${source.name} 发动方天画戟，追加了 ${extras.length} 名目标`);
+    targets.push(...extras);
+  }
+
+  return targets;
+}
+
+function tryDiscardHorseByKylinBow(state: GameState, source: PlayerState, target: PlayerState): void {
+  if (target.equipment.horsePlus) {
+    const removed = target.equipment.horsePlus;
+    target.equipment.horsePlus = null;
+    state.discard.push(removed);
+    pushEvent(state, "equip", `${source.name} 发动麒麟弓，弃置了 ${target.name} 的+1坐骑`);
+    return;
+  }
+
+  if (target.equipment.horseMinus) {
+    const removed = target.equipment.horseMinus;
+    target.equipment.horseMinus = null;
+    state.discard.push(removed);
+    pushEvent(state, "equip", `${source.name} 发动麒麟弓，弃置了 ${target.name} 的-1坐骑`);
+  }
 }
 
 function tryAutoDodgeWithEightDiagram(state: GameState, target: PlayerState): boolean {
@@ -1497,6 +1673,28 @@ function consumeFirstCardByKind(player: PlayerState, kind: Card["kind"]): Card |
   }
   const [card] = player.hand.splice(index, 1);
   return card;
+}
+
+function consumeSlashLikeCard(state: GameState, player: PlayerState, contextName: string): Card | undefined {
+  const slash = consumeFirstCardByKind(player, "slash");
+  if (slash) {
+    return slash;
+  }
+
+  if (player.equipment.weapon?.kind === "weapon_spear" && player.hand.length >= 2) {
+    const subA = player.hand.shift() as Card;
+    const subB = player.hand.shift() as Card;
+    state.discard.push(subA, subB);
+    pushEvent(state, "equip", `${player.name} 在${contextName}中发动丈八蛇矛，将两张手牌当杀打出`);
+    return {
+      id: `${VIRTUAL_SPEAR_SLASH_CARD_ID}-rsp-${state.turnCount}-${state.events.length}`,
+      kind: "slash",
+      suit: "spade",
+      point: 7
+    };
+  }
+
+  return undefined;
 }
 
 function getPlayerById(state: GameState, playerId: string): PlayerState | undefined {

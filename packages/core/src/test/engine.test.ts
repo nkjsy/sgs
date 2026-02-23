@@ -25,6 +25,18 @@ test("createDeck should return standard identity 108-card blueprint with suit an
 });
 
 /**
+ * 验证当前标准身份场牌堆口径不混入军争扩展关键装备。
+ */
+test("createDeck should exclude military-struggle expansion equipments", () => {
+  const deck = createDeck();
+  const kinds = new Set(deck.map((card) => String(card.kind)));
+
+  assert.equal(kinds.has("weapon_guding_blade"), false);
+  assert.equal(kinds.has("weapon_vermilion_fan"), false);
+  assert.equal(kinds.has("armor_silver_lion"), false);
+});
+
+/**
  * 验证回合从摸牌阶段进入出牌阶段后，存在结束出牌阶段动作。
  */
 test("legal actions should include end play phase in play phase", () => {
@@ -818,4 +830,393 @@ test("qinggang sword should ignore renwang shield", () => {
   });
 
   assert.equal(target.hp, hpBefore - 1);
+});
+
+/**
+ * 验证贯石斧可在【杀】被【闪】抵消后弃置两张手牌令其仍生效。
+ */
+test("axe should force slash to hit after dodge by discarding two cards", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.equipment.weapon = { id: "axe-1", kind: "weapon_axe", suit: "diamond", point: 5 };
+  actor.hand = [
+    { id: "slash-axe-1", kind: "slash", suit: "spade", point: 9 },
+    { id: "axe-cost-a", kind: "dodge", suit: "heart", point: 2 },
+    { id: "axe-cost-b", kind: "peach", suit: "heart", point: 3 }
+  ];
+  target.hand = [{ id: "target-dodge-axe", kind: "dodge", suit: "diamond", point: 7 }];
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-axe-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, hpBefore - 1);
+  assert.equal(actor.hand.length, 0);
+});
+
+/**
+ * 验证麒麟弓在【杀】造成伤害后可弃置目标坐骑。
+ */
+test("kylin bow should discard target horse after slash damage", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.equipment.weapon = { id: "kylin-1", kind: "weapon_kylin_bow", suit: "heart", point: 5 };
+  actor.hand = [{ id: "slash-kylin-1", kind: "slash", suit: "spade", point: 8 }];
+  target.equipment.horsePlus = { id: "target-horse-plus", kind: "horse_jueying", suit: "spade", point: 5 };
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-kylin-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.equipment.horsePlus, null);
+  assert.ok(state.discard.some((card) => card.id === "target-horse-plus"));
+});
+
+/**
+ * 验证丈八蛇矛可将两张手牌当【杀】在出牌阶段使用。
+ */
+test("spear should allow virtual slash from two hand cards in play phase", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.equipment.weapon = { id: "spear-1", kind: "weapon_spear", suit: "spade", point: 12 };
+  actor.hand = [
+    { id: "spear-sub-a", kind: "dodge", suit: "diamond", point: 2 },
+    { id: "spear-sub-b", kind: "peach", suit: "heart", point: 3 }
+  ];
+
+  const virtualSlashAction = getLegalActions(state).find(
+    (action) => action.type === "play-card" && action.cardId === "__virtual_spear_slash__" && action.targetId === target.id
+  );
+  assert.ok(virtualSlashAction);
+
+  const hpBefore = target.hp;
+  applyAction(state, virtualSlashAction);
+  assert.equal(target.hp, hpBefore - 1);
+  assert.equal(actor.hand.length, 0);
+});
+
+/**
+ * 验证丈八蛇矛可在南蛮响应中将两张手牌当【杀】打出。
+ */
+test("spear should allow virtual slash response for barbarian", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[2];
+  const target = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "barbarian-spear-1", kind: "barbarian", suit: "spade", point: 7 }];
+  target.equipment.weapon = { id: "spear-2", kind: "weapon_spear", suit: "spade", point: 12 };
+  target.hand = [
+    { id: "rsp-a", kind: "dodge", suit: "diamond", point: 4 },
+    { id: "rsp-b", kind: "peach", suit: "heart", point: 5 }
+  ];
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "barbarian-spear-1"
+  });
+
+  assert.equal(target.hp, hpBefore);
+  assert.equal(target.hand.length, 0);
+});
+
+/**
+ * 验证方天画戟在“最后手牌为杀”时可追加最多两名额外目标（MVP 自动择优）。
+ */
+test("halberd should add up to two extra slash targets when slash is last hand card", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const primary = state.players[1];
+  const extraA = state.players[2];
+  const extraB = state.players[3];
+  const untouched = state.players[4];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.equipment.weapon = { id: "halberd-1", kind: "weapon_halberd", suit: "diamond", point: 12 };
+  actor.hand = [{ id: "slash-halberd-1", kind: "slash", suit: "spade", point: 8 }];
+
+  extraA.hp = 2;
+  extraB.hp = 2;
+  untouched.hp = 4;
+
+  const hpPrimaryBefore = primary.hp;
+  const hpExtraABefore = extraA.hp;
+  const hpExtraBBefore = extraB.hp;
+  const hpUntouchedBefore = untouched.hp;
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-halberd-1",
+    targetId: primary.id
+  });
+
+  assert.equal(primary.hp, hpPrimaryBefore - 1);
+  assert.equal(extraA.hp, hpExtraABefore - 1);
+  assert.equal(extraB.hp, hpExtraBBefore - 1);
+  assert.equal(untouched.hp, hpUntouchedBefore);
+});
+
+/**
+ * 验证雌雄双股剑对异性目标可触发弃牌分支。
+ */
+test("double sword should force opposite-gender target to discard when possible", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.equipment.weapon = { id: "double-sword-1", kind: "weapon_double_sword", suit: "spade", point: 2 };
+  actor.hand = [{ id: "slash-ds-1", kind: "slash", suit: "spade", point: 9 }];
+  target.hand = [{ id: "target-card-ds-1", kind: "peach", suit: "heart", point: 3 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-ds-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hand.length, 0);
+  assert.ok(state.discard.some((card) => card.id === "target-card-ds-1"));
+});
+
+/**
+ * 验证雌雄双股剑在异性目标无手牌时触发摸牌分支。
+ */
+test("double sword should let source draw when opposite-gender target has no cards", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.equipment.weapon = { id: "double-sword-2", kind: "weapon_double_sword", suit: "spade", point: 2 };
+  actor.hand = [{ id: "slash-ds-2", kind: "slash", suit: "club", point: 9 }];
+  state.deck = [{ id: "draw-double-sword", kind: "dodge", suit: "diamond", point: 2 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-ds-2",
+    targetId: target.id
+  });
+
+  assert.ok(actor.hand.some((card) => card.id === "draw-double-sword"));
+});
+
+/**
+ * 验证青龙偃月刀在【杀】被【闪】抵消后可追加一张【杀】。
+ */
+test("blade should follow up with another slash after dodge", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.equipment.weapon = { id: "blade-1", kind: "weapon_blade", suit: "spade", point: 5 };
+  actor.hand = [
+    { id: "slash-follow-1", kind: "slash", suit: "club", point: 9 },
+    { id: "slash-follow-2", kind: "slash", suit: "spade", point: 10 }
+  ];
+  target.hand = [{ id: "target-dodge-follow", kind: "dodge", suit: "diamond", point: 6 }];
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-follow-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, hpBefore - 1);
+});
+
+/**
+ * 验证寒冰剑可防止【杀】伤害并弃置目标两张牌。
+ */
+test("ice sword should prevent slash damage and discard two target cards", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.equipment.weapon = { id: "ice-sword-1", kind: "weapon_ice_sword", suit: "spade", point: 2 };
+  actor.hand = [{ id: "slash-ice-1", kind: "slash", suit: "spade", point: 10 }];
+  target.hand = [
+    { id: "target-card-ice-a", kind: "peach", suit: "heart", point: 7 },
+    { id: "target-card-ice-b", kind: "snatch", suit: "heart", point: 8 }
+  ];
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-ice-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, hpBefore);
+  assert.equal(target.hand.length, 0);
+  assert.ok(state.discard.some((card) => card.id === "target-card-ice-a"));
+  assert.ok(state.discard.some((card) => card.id === "target-card-ice-b"));
+});
+
+/**
+ * 验证仁王盾仅对黑色【杀】无效化，红色【杀】仍会正常结算。
+ */
+test("renwang shield should not block red slash", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "slash-red-rw-1", kind: "slash", suit: "heart", point: 10 }];
+  target.equipment.armor = { id: "renwang-red-1", kind: "armor_renwang_shield", suit: "club", point: 2 };
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-red-rw-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, hpBefore - 1);
+});
+
+/**
+ * 验证青釭剑会无视八卦阵，目标不会触发八卦判定闪避。
+ */
+test("qinggang sword should bypass eight diagram auto-dodge", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.equipment.weapon = { id: "qinggang-bypass-1", kind: "weapon_qinggang_sword", suit: "spade", point: 6 };
+  actor.hand = [{ id: "slash-qg-ed-1", kind: "slash", suit: "spade", point: 9 }];
+  target.equipment.armor = { id: "eight-diagram-bypass-1", kind: "armor_eight_diagram", suit: "spade", point: 2 };
+  state.deck = [{ id: "judge-red-bypass-1", kind: "peach", suit: "heart", point: 7 }];
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-qg-ed-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, hpBefore - 1);
+  assert.equal(state.discard.some((card) => card.id === "judge-red-bypass-1"), false);
+});
+
+/**
+ * 验证方天画戟多目标结算时，仁王盾会按目标分别生效。
+ */
+test("renwang shield should apply per target in halberd multi-target slash", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const primary = state.players[1];
+  const extraA = state.players[2];
+  const extraB = state.players[3];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.equipment.weapon = { id: "halberd-rw-1", kind: "weapon_halberd", suit: "diamond", point: 12 };
+  actor.hand = [{ id: "slash-halberd-rw-1", kind: "slash", suit: "club", point: 9 }];
+
+  primary.equipment.armor = { id: "renwang-primary", kind: "armor_renwang_shield", suit: "club", point: 2 };
+  extraA.equipment.armor = { id: "renwang-extra-a", kind: "armor_renwang_shield", suit: "club", point: 2 };
+
+  const hpPrimaryBefore = primary.hp;
+  const hpExtraABefore = extraA.hp;
+  const hpExtraBBefore = extraB.hp;
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-halberd-rw-1",
+    targetId: primary.id
+  });
+
+  assert.equal(primary.hp, hpPrimaryBefore);
+  assert.equal(extraA.hp, hpExtraABefore);
+  assert.equal(extraB.hp, hpExtraBBefore - 1);
 });
