@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createDeck } from "../cards";
 import { applyAction, createInitialGame, getLegalActions, stepPhase } from "../engine";
+import { STANDARD_SKILL_IDS, assignSkillToPlayer } from "../skills";
 import { PlayCardAction } from "../types";
 
 /**
@@ -90,6 +91,25 @@ test("slash target should respect attack range", () => {
     .map((action) => action.targetId);
 
   assert.deepEqual(slashTargets.sort(), ["P2", "P5"]);
+});
+
+/**
+ * 验证马超【马术】可令你计算与其他角色距离-1，从而无武器也可指定原距离2的杀目标。
+ */
+test("mashu skill should reduce distance by 1 for slash targeting", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.machaoMashu);
+  actor.hand = [{ id: "slash-mashu-1", kind: "slash", suit: "spade", point: 7 }];
+
+  stepPhase(state);
+  const slashTargets = getLegalActions(state)
+    .filter((action): action is PlayCardAction => action.type === "play-card" && action.cardId === "slash-mashu-1")
+    .map((action) => action.targetId)
+    .sort();
+
+  assert.deepEqual(slashTargets, ["P2", "P3", "P4", "P5"]);
 });
 
 /**
@@ -203,6 +223,40 @@ test("duel should deal damage to first player who fails to play slash", () => {
   });
 
   assert.equal(target.hp, targetHpBefore - 1);
+});
+
+/**
+ * 验证关羽【武圣】可将红色手牌当【杀】打出（决斗响应链）。
+ */
+test("wusheng skill should allow red card as slash in duel response", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, target.id, STANDARD_SKILL_IDS.guanyuWusheng);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+
+  actor.hand = [{ id: "duel-ws-1", kind: "duel", suit: "spade", point: 1 }];
+  target.hand = [{ id: "target-red-ws-1", kind: "dodge", suit: "heart", point: 6 }];
+
+  const targetHpBefore = target.hp;
+  const actorHpBefore = actor.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "duel-ws-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, targetHpBefore);
+  assert.equal(actor.hp, actorHpBefore - 1);
+  assert.ok(state.discard.some((card) => card.id === "target-red-ws-1"));
 });
 
 /**
@@ -1694,6 +1748,71 @@ test("crossbow should allow multiple slashes in one play phase", () => {
     (action) => action.type === "play-card" && action.cardId === "slash-cb-2" && action.targetId === target.id
   );
   assert.equal(secondSlashStillLegal, true);
+});
+
+/**
+ * 验证张飞【咆哮】（锁定技）可令【杀】在出牌阶段不受次数上限限制。
+ */
+test("paoxiao skill should allow multiple slashes in one play phase", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.zhangfeiPaoxiao);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [
+    { id: "slash-px-1", kind: "slash", suit: "spade", point: 7 },
+    { id: "slash-px-2", kind: "slash", suit: "club", point: 8 }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-px-1",
+    targetId: target.id
+  });
+
+  const secondSlashStillLegal = getLegalActions(state).some(
+    (action) => action.type === "play-card" && action.cardId === "slash-px-2" && action.targetId === target.id
+  );
+  assert.equal(secondSlashStillLegal, true);
+});
+
+/**
+ * 验证关羽【武圣】可在出牌阶段将红色手牌当【杀】使用。
+ */
+test("wusheng skill should allow red card as slash in play phase", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.guanyuWusheng);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "wusheng-red-play-1", kind: "dodge", suit: "heart", point: 9 }];
+
+  const virtualSlashAction = getLegalActions(state).find(
+    (action) => action.type === "play-card" && action.cardId === "__virtual_wusheng_slash__::wusheng-red-play-1"
+  );
+  assert.ok(virtualSlashAction);
+
+  const target = state.players.find((player) => player.id === (virtualSlashAction.type === "play-card" ? virtualSlashAction.targetId : ""));
+  assert.ok(target);
+  const hpBefore = target.hp;
+  applyAction(state, virtualSlashAction);
+  assert.equal(target.hp, hpBefore - 1);
+  assert.equal(actor.hand.length, 0);
+  assert.ok(state.discard.some((card) => card.id === "wusheng-red-play-1"));
 });
 
 /**

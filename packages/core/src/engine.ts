@@ -1,5 +1,5 @@
 import { createDeck, shuffleWithSeed } from "./cards";
-import { createSkillSystemState, emitSkillEvent } from "./skills";
+import { STANDARD_SKILL_IDS, createSkillSystemState, emitSkillEvent, hasSkill } from "./skills";
 import {
   Card,
   CardKind,
@@ -35,6 +35,7 @@ const EQUIPMENT_KINDS: CardKind[] = [
 ];
 const DELAYED_TRICK_KINDS: CardKind[] = ["indulgence", "lightning"];
 const VIRTUAL_SPEAR_SLASH_CARD_ID = "__virtual_spear_slash__";
+const VIRTUAL_WUSHENG_SLASH_CARD_ID_PREFIX = "__virtual_wusheng_slash__::";
 
 export interface CreateInitialGameOptions {
   nullifyResponsePolicy?: NullifyResponsePolicy;
@@ -165,7 +166,7 @@ export function getLegalActions(state: GameState): TurnAction[] {
 
   for (const card of actor.hand) {
     if (card.kind === "slash") {
-      if (state.slashUsedInTurn >= 1 && !hasUnlimitedSlashUsage(actor)) {
+      if (state.slashUsedInTurn >= 1 && !hasUnlimitedSlashUsage(state, actor)) {
         continue;
       }
 
@@ -174,6 +175,22 @@ export function getLegalActions(state: GameState): TurnAction[] {
           type: "play-card",
           actorId: actor.id,
           cardId: card.id,
+          targetId: target.id
+        });
+      }
+      continue;
+    }
+
+    if (hasSkill(state, actor.id, STANDARD_SKILL_IDS.guanyuWusheng) && isRed(card)) {
+      if (state.slashUsedInTurn >= 1 && !hasUnlimitedSlashUsage(state, actor)) {
+        continue;
+      }
+
+      for (const target of getAliveOpponents(state, actor.id).filter((candidate) => isInAttackRange(state, actor.id, candidate.id))) {
+        actions.push({
+          type: "play-card",
+          actorId: actor.id,
+          cardId: `${VIRTUAL_WUSHENG_SLASH_CARD_ID_PREFIX}${card.id}`,
           targetId: target.id
         });
       }
@@ -312,7 +329,7 @@ export function getLegalActions(state: GameState): TurnAction[] {
   }
 
   if (actor.equipment.weapon?.kind === "weapon_spear" && actor.hand.length >= 2) {
-    if (state.slashUsedInTurn < 1 || hasUnlimitedSlashUsage(actor)) {
+    if (state.slashUsedInTurn < 1 || hasUnlimitedSlashUsage(state, actor)) {
       for (const target of getAliveOpponents(state, actor.id).filter((candidate) => isInAttackRange(state, actor.id, candidate.id))) {
         actions.push({
           type: "play-card",
@@ -433,7 +450,26 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
   }
 
   let card: Card | undefined;
-  if (action.cardId === VIRTUAL_SPEAR_SLASH_CARD_ID) {
+  if (action.cardId.startsWith(VIRTUAL_WUSHENG_SLASH_CARD_ID_PREFIX)) {
+    if (!hasSkill(state, actor.id, STANDARD_SKILL_IDS.guanyuWusheng)) {
+      return;
+    }
+
+    const sourceCardId = action.cardId.slice(VIRTUAL_WUSHENG_SLASH_CARD_ID_PREFIX.length);
+    const sourceCard = removeCardFromHand(actor, sourceCardId);
+    if (!sourceCard || !isRed(sourceCard)) {
+      if (sourceCard) {
+        actor.hand.push(sourceCard);
+      }
+      return;
+    }
+
+    pushEvent(state, "skill", `${actor.name} 发动武圣，将红色手牌当杀使用`);
+    card = {
+      ...sourceCard,
+      kind: "slash"
+    };
+  } else if (action.cardId === VIRTUAL_SPEAR_SLASH_CARD_ID) {
     if (actor.equipment.weapon?.kind !== "weapon_spear" || actor.hand.length < 2) {
       return;
     }
@@ -473,7 +509,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
       return;
     }
 
-    if (state.slashUsedInTurn >= 1 && !hasUnlimitedSlashUsage(actor)) {
+    if (state.slashUsedInTurn >= 1 && !hasUnlimitedSlashUsage(state, actor)) {
       actor.hand.push(card);
       return;
     }
@@ -1471,6 +1507,9 @@ function getDistance(state: GameState, fromId: string, toId: string): number {
   if (from.equipment.horseMinus) {
     distance -= 1;
   }
+  if (hasSkill(state, from.id, STANDARD_SKILL_IDS.machaoMashu)) {
+    distance -= 1;
+  }
   if (to.equipment.horsePlus) {
     distance += 1;
   }
@@ -1693,8 +1732,8 @@ function getAliveOpponents(state: GameState, actorId: string): PlayerState[] {
   return state.players.filter((candidate) => candidate.alive && candidate.id !== actor.id);
 }
 
-function hasUnlimitedSlashUsage(player: PlayerState): boolean {
-  return player.equipment.weapon?.kind === "weapon_crossbow";
+function hasUnlimitedSlashUsage(state: GameState, player: PlayerState): boolean {
+  return player.equipment.weapon?.kind === "weapon_crossbow" || hasSkill(state, player.id, STANDARD_SKILL_IDS.zhangfeiPaoxiao);
 }
 
 function removeCardFromHand(player: PlayerState, cardId: string): Card | undefined {
@@ -1719,6 +1758,18 @@ function consumeSlashLikeCard(state: GameState, player: PlayerState, contextName
   const slash = consumeFirstCardByKind(player, "slash");
   if (slash) {
     return slash;
+  }
+
+  if (hasSkill(state, player.id, STANDARD_SKILL_IDS.guanyuWusheng)) {
+    const redIndex = player.hand.findIndex((card) => isRed(card));
+    if (redIndex >= 0) {
+      const [converted] = player.hand.splice(redIndex, 1);
+      pushEvent(state, "skill", `${player.name} 在${contextName}中发动武圣，将红色手牌当杀打出`);
+      return {
+        ...converted,
+        kind: "slash"
+      };
+    }
   }
 
   if (player.equipment.weapon?.kind === "weapon_spear" && player.hand.length >= 2) {
@@ -1915,6 +1966,10 @@ function isSpade(card: Card): boolean {
 function isBlack(card: Card): boolean {
   const suit = getCardSuit(card);
   return suit === "spade" || suit === "club";
+}
+
+function isRed(card: Card): boolean {
+  return !isBlack(card);
 }
 
 function isPointBetween(card: Card, start: number, end: number): boolean {

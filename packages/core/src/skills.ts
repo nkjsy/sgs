@@ -1,5 +1,11 @@
 import { GameEvent, GameState, SkillDefinition, SkillSystemState } from "./types";
 
+export const STANDARD_SKILL_IDS = {
+  zhangfeiPaoxiao: "std.zhangfei.paoxiao",
+  machaoMashu: "std.machao.mashu",
+  guanyuWusheng: "std.guanyu.wusheng"
+} as const;
+
 export function createSkillSystemState(): SkillSystemState {
   return {
     definitions: {},
@@ -17,6 +23,11 @@ export function assignSkillToPlayer(state: GameState, playerId: string, skillId:
     skills.push(skillId);
   }
   state.skillSystem.playerSkills[playerId] = skills;
+}
+
+export function hasSkill(state: GameState, playerId: string, skillId: string): boolean {
+  const skills = state.skillSystem.playerSkills[playerId] ?? [];
+  return skills.includes(skillId);
 }
 
 export function emitSkillEvent(state: GameState, event: GameEvent): void {
