@@ -2010,6 +2010,70 @@ test("wushuang skill should require two slashes from opponent in duel", () => {
 });
 
 /**
+ * 验证赵云【龙胆】可在出牌阶段将【闪】当【杀】使用。
+ */
+test("longdan skill should allow dodge as slash in play phase", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.zhaoyunLongdan);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "longdan-dodge-play-1", kind: "dodge", suit: "heart", point: 9 }];
+
+  const virtualSlashAction = getLegalActions(state).find(
+    (action) => action.type === "play-card" && action.cardId === "__virtual_longdan_slash__::longdan-dodge-play-1"
+  );
+  assert.ok(virtualSlashAction);
+
+  const target = state.players.find((player) => player.id === (virtualSlashAction.type === "play-card" ? virtualSlashAction.targetId : ""));
+  assert.ok(target);
+  const hpBefore = target.hp;
+  applyAction(state, virtualSlashAction);
+
+  assert.equal(target.hp, hpBefore - 1);
+  assert.equal(actor.hand.length, 0);
+  assert.ok(state.discard.some((card) => card.id === "longdan-dodge-play-1"));
+});
+
+/**
+ * 验证赵云【龙胆】可在响应【杀】时将【杀】当【闪】打出。
+ */
+test("longdan skill should allow slash as dodge response to slash", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, target.id, STANDARD_SKILL_IDS.zhaoyunLongdan);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "slash-longdan-attack-1", kind: "slash", suit: "spade", point: 10 }];
+  target.hand = [{ id: "slash-longdan-dodge-1", kind: "slash", suit: "club", point: 8 }];
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-longdan-attack-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, hpBefore);
+  assert.equal(target.hand.length, 0);
+  assert.ok(state.discard.some((card) => card.id === "slash-longdan-dodge-1"));
+});
+
+/**
  * 验证八卦阵判定为红色时可视为打出【闪】抵消【杀】。
  */
 test("eight diagram should auto-dodge slash on red judgment", () => {

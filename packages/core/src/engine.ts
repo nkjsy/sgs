@@ -36,6 +36,7 @@ const EQUIPMENT_KINDS: CardKind[] = [
 const DELAYED_TRICK_KINDS: CardKind[] = ["indulgence", "lightning"];
 const VIRTUAL_SPEAR_SLASH_CARD_ID = "__virtual_spear_slash__";
 const VIRTUAL_WUSHENG_SLASH_CARD_ID_PREFIX = "__virtual_wusheng_slash__::";
+const VIRTUAL_LONGDAN_SLASH_CARD_ID_PREFIX = "__virtual_longdan_slash__::";
 
 export interface CreateInitialGameOptions {
   nullifyResponsePolicy?: NullifyResponsePolicy;
@@ -195,6 +196,24 @@ export function getLegalActions(state: GameState): TurnAction[] {
           type: "play-card",
           actorId: actor.id,
           cardId: `${VIRTUAL_WUSHENG_SLASH_CARD_ID_PREFIX}${card.id}`,
+          targetId: target.id
+        });
+      }
+      continue;
+    }
+
+    if (hasSkill(state, actor.id, STANDARD_SKILL_IDS.zhaoyunLongdan) && card.kind === "dodge") {
+      if (state.slashUsedInTurn >= 1 && !hasUnlimitedSlashUsage(state, actor)) {
+        continue;
+      }
+
+      for (const target of getAliveOpponents(state, actor.id).filter(
+        (candidate) => isInAttackRange(state, actor.id, candidate.id) && canBeTargetedBySlashOrDuel(state, candidate)
+      )) {
+        actions.push({
+          type: "play-card",
+          actorId: actor.id,
+          cardId: `${VIRTUAL_LONGDAN_SLASH_CARD_ID_PREFIX}${card.id}`,
           targetId: target.id
         });
       }
@@ -477,6 +496,25 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
       ...sourceCard,
       kind: "slash"
     };
+  } else if (action.cardId.startsWith(VIRTUAL_LONGDAN_SLASH_CARD_ID_PREFIX)) {
+    if (!hasSkill(state, actor.id, STANDARD_SKILL_IDS.zhaoyunLongdan)) {
+      return;
+    }
+
+    const sourceCardId = action.cardId.slice(VIRTUAL_LONGDAN_SLASH_CARD_ID_PREFIX.length);
+    const sourceCard = removeCardFromHand(actor, sourceCardId);
+    if (!sourceCard || sourceCard.kind !== "dodge") {
+      if (sourceCard) {
+        actor.hand.push(sourceCard);
+      }
+      return;
+    }
+
+    pushEvent(state, "skill", `${actor.name} 发动龙胆，将闪当杀使用`);
+    card = {
+      ...sourceCard,
+      kind: "slash"
+    };
   } else if (action.cardId === VIRTUAL_SPEAR_SLASH_CARD_ID) {
     if (actor.equipment.weapon?.kind !== "weapon_spear" || actor.hand.length < 2) {
       return;
@@ -729,7 +767,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
           continue;
         }
 
-        const dodge = consumeFirstCardByKind(target, "dodge");
+        const dodge = consumeDodgeLikeCard(state, target, "万箭齐发");
         if (dodge) {
           state.discard.push(dodge);
           pushEvent(state, "response", `${target.name} 打出闪响应万箭齐发`);
@@ -1835,6 +1873,17 @@ function consumeSlashLikeCard(state: GameState, player: PlayerState, contextName
     return slash;
   }
 
+  if (hasSkill(state, player.id, STANDARD_SKILL_IDS.zhaoyunLongdan)) {
+    const dodgeAsSlash = consumeFirstCardByKind(player, "dodge");
+    if (dodgeAsSlash) {
+      pushEvent(state, "skill", `${player.name} 在${contextName}中发动龙胆，将闪当杀打出`);
+      return {
+        ...dodgeAsSlash,
+        kind: "slash"
+      };
+    }
+  }
+
   if (hasSkill(state, player.id, STANDARD_SKILL_IDS.guanyuWusheng)) {
     const redIndex = player.hand.findIndex((card) => isRed(card));
     if (redIndex >= 0) {
@@ -1890,7 +1939,7 @@ function consumeRequiredDodgeResponses(
       continue;
     }
 
-    const dodgeCard = consumeFirstCardByKind(target, "dodge");
+    const dodgeCard = consumeDodgeLikeCard(state, target, "响应杀");
     if (!dodgeCard) {
       break;
     }
@@ -1913,6 +1962,28 @@ function consumeRequiredDodgeResponses(
   }
 
   return true;
+}
+
+function consumeDodgeLikeCard(state: GameState, player: PlayerState, contextName: string): Card | undefined {
+  const dodge = consumeFirstCardByKind(player, "dodge");
+  if (dodge) {
+    return dodge;
+  }
+
+  if (!hasSkill(state, player.id, STANDARD_SKILL_IDS.zhaoyunLongdan)) {
+    return undefined;
+  }
+
+  const slashAsDodge = consumeFirstCardByKind(player, "slash");
+  if (!slashAsDodge) {
+    return undefined;
+  }
+
+  pushEvent(state, "skill", `${player.name} 在${contextName}中发动龙胆，将杀当闪打出`);
+  return {
+    ...slashAsDodge,
+    kind: "dodge"
+  };
 }
 
 function getPlayerById(state: GameState, playerId: string): PlayerState | undefined {
