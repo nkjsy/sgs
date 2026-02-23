@@ -2074,6 +2074,135 @@ test("longdan skill should allow slash as dodge response to slash", () => {
 });
 
 /**
+ * 验证马超【铁骑】判定为红色时，目标不能使用【闪】响应【杀】。
+ */
+test("tieqi skill should prevent dodge when judgment is red", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.machaoTieqi);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "slash-tieqi-1", kind: "slash", suit: "spade", point: 9 }];
+  target.hand = [{ id: "dodge-tieqi-1", kind: "dodge", suit: "heart", point: 2 }];
+  state.deck = [{ id: "tieqi-judge-red-1", kind: "peach", suit: "heart", point: 7 }];
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-tieqi-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, hpBefore - 1);
+  assert.equal(target.hand.length, 1);
+});
+
+/**
+ * 验证马超【铁骑】判定为黑色时，目标仍可正常使用【闪】响应【杀】。
+ */
+test("tieqi skill should still allow dodge when judgment is black", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.machaoTieqi);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "slash-tieqi-2", kind: "slash", suit: "spade", point: 10 }];
+  target.hand = [{ id: "dodge-tieqi-2", kind: "dodge", suit: "heart", point: 3 }];
+  state.deck = [{ id: "tieqi-judge-black-1", kind: "slash", suit: "club", point: 6 }];
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-tieqi-2",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, hpBefore);
+  assert.equal(target.hand.length, 0);
+});
+
+/**
+ * 验证黄月英【集智】在使用非延时锦囊后可摸 1 张牌。
+ */
+test("jizhi skill should draw 1 card after using non-delayed trick", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.huangyueyingJizhi);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "ex-nihilo-jizhi-1", kind: "ex_nihilo", suit: "heart", point: 4 }];
+  state.deck = [
+    { id: "jizhi-draw-1", kind: "dodge", suit: "diamond", point: 8 },
+    { id: "ex-nihilo-draw-1", kind: "slash", suit: "spade", point: 11 },
+    { id: "ex-nihilo-draw-2", kind: "peach", suit: "heart", point: 12 }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "ex-nihilo-jizhi-1",
+    targetId: actor.id
+  });
+
+  assert.equal(actor.hand.length, 3);
+  assert.ok(actor.hand.some((card) => card.id === "jizhi-draw-1"));
+  assert.ok(actor.hand.some((card) => card.id === "ex-nihilo-draw-1"));
+  assert.ok(actor.hand.some((card) => card.id === "ex-nihilo-draw-2"));
+});
+
+/**
+ * 验证黄月英【集智】不会在使用延时锦囊时触发。
+ */
+test("jizhi skill should not trigger on delayed trick", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.huangyueyingJizhi);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "indulgence-jizhi-1", kind: "indulgence", suit: "club", point: 5 }];
+  state.deck = [{ id: "jizhi-should-not-draw-1", kind: "slash", suit: "spade", point: 13 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "indulgence-jizhi-1",
+    targetId: target.id
+  });
+
+  assert.equal(actor.hand.length, 0);
+  assert.equal(state.deck.some((card) => card.id === "jizhi-should-not-draw-1"), true);
+});
+
+/**
  * 验证八卦阵判定为红色时可视为打出【闪】抵消【杀】。
  */
 test("eight diagram should auto-dodge slash on red judgment", () => {

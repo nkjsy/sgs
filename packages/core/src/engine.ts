@@ -565,7 +565,8 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
     pushEvent(state, "card", `${actor.name} 对 ${target.name} 使用杀`);
     const slashTargets = getSlashTargetsForResolution(state, actor, target);
     for (const slashTarget of slashTargets) {
-      resolveSlashOnTarget(state, actor, slashTarget, card, "杀", false);
+      const canUseDodge = canTargetUseDodgeAgainstSlash(state, actor, slashTarget);
+      resolveSlashOnTarget(state, actor, slashTarget, card, "杀", false, canUseDodge);
       if (state.winner) {
         break;
       }
@@ -587,6 +588,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
     }
 
     const trickName = card.kind === "dismantle" ? "过河拆桥" : "顺手牵羊";
+    triggerJizhiOnTrickUse(state, actor, card.kind);
     pushEvent(state, "card", `${actor.name} 对 ${target.name} 使用${trickName}`);
 
     const negated = resolveNullifyChain(state, actor.id, target.id, card.kind);
@@ -621,6 +623,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
       return;
     }
 
+    triggerJizhiOnTrickUse(state, actor, card.kind);
     pushEvent(state, "card", `${actor.name} 对 ${target.name} 使用决斗`);
     const negated = resolveNullifyChain(state, actor.id, target.id, card.kind);
     if (negated) {
@@ -651,6 +654,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
       return;
     }
 
+    triggerJizhiOnTrickUse(state, actor, card.kind);
     pushEvent(state, "card", `${actor.name} 对 ${weaponHolder.name} 使用借刀杀人，指定 ${slashTarget.name} 为目标`);
     const negated = resolveNullifyChain(state, actor.id, weaponHolder.id, card.kind);
     if (negated) {
@@ -676,6 +680,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
   }
 
   if (card.kind === "taoyuan") {
+    triggerJizhiOnTrickUse(state, actor, card.kind);
     pushEvent(state, "card", `${actor.name} 使用桃园结义`);
     resolveTaoyuan(state, actor.id);
     state.discard.push(card);
@@ -683,6 +688,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
   }
 
   if (card.kind === "harvest") {
+    triggerJizhiOnTrickUse(state, actor, card.kind);
     pushEvent(state, "card", `${actor.name} 使用五谷丰登`);
     resolveHarvest(state, actor.id);
     state.discard.push(card);
@@ -696,6 +702,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
       return;
     }
 
+    triggerJizhiOnTrickUse(state, actor, card.kind);
     pushEvent(state, "card", `${actor.name} 对 ${target.name} 使用无中生有`);
     const negated = resolveNullifyChain(state, actor.id, target.id, card.kind);
     if (negated) {
@@ -743,6 +750,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
 
   if (card.kind === "barbarian" || card.kind === "archery") {
     const trickName = card.kind === "barbarian" ? "南蛮入侵" : "万箭齐发";
+    triggerJizhiOnTrickUse(state, actor, card.kind);
     pushEvent(state, "card", `${actor.name} 使用${trickName}`);
 
     const targets = getAliveOpponents(state, actor.id);
@@ -829,7 +837,8 @@ function resolveSlashOnTarget(
   target: PlayerState,
   slashCard: Card,
   slashLabel = "杀",
-  shouldDiscardSlash = true
+  shouldDiscardSlash = true,
+  canUseDodge = true
 ): void {
   if (source.equipment.weapon?.kind === "weapon_double_sword" && source.gender !== target.gender) {
     if (target.hand.length > 0) {
@@ -855,38 +864,41 @@ function resolveSlashOnTarget(
     return;
   }
 
-  const requiredDodgeCount = hasSkill(state, source.id, STANDARD_SKILL_IDS.lvbuWushuang) ? 2 : 1;
-  const dodged = consumeRequiredDodgeResponses(state, target, requiredDodgeCount, armorIgnored, slashLabel);
-  if (dodged) {
-
-    if (source.equipment.weapon?.kind === "weapon_axe" && source.hand.length >= 2) {
-      const discardA = source.hand.shift() as Card;
-      const discardB = source.hand.shift() as Card;
-      state.discard.push(discardA, discardB);
-      pushEvent(state, "equip", `${source.name} 发动贯石斧，弃置两张手牌令${slashLabel}仍然生效`);
-      dealDamage(state, source.id, target.id, 1);
-      if (shouldDiscardSlash) {
-        state.discard.push(slashCard);
-      }
-      return;
-    }
-
-    if (source.equipment.weapon?.kind === "weapon_blade") {
-      const followSlash = consumeSlashLikeCard(state, source, "青龙偃月刀");
-      if (followSlash) {
-        pushEvent(state, "equip", `${source.name} 发动青龙偃月刀，对 ${target.name} 追加使用一张杀`);
-        resolveSlashOnTarget(state, source, target, followSlash, "青龙偃月刀追击的杀");
+  if (canUseDodge) {
+    const requiredDodgeCount = hasSkill(state, source.id, STANDARD_SKILL_IDS.lvbuWushuang) ? 2 : 1;
+    const dodged = consumeRequiredDodgeResponses(state, target, requiredDodgeCount, armorIgnored, slashLabel);
+    if (dodged) {
+      if (source.equipment.weapon?.kind === "weapon_axe" && source.hand.length >= 2) {
+        const discardA = source.hand.shift() as Card;
+        const discardB = source.hand.shift() as Card;
+        state.discard.push(discardA, discardB);
+        pushEvent(state, "equip", `${source.name} 发动贯石斧，弃置两张手牌令${slashLabel}仍然生效`);
+        dealDamage(state, source.id, target.id, 1);
         if (shouldDiscardSlash) {
           state.discard.push(slashCard);
         }
         return;
       }
-    }
 
-    if (shouldDiscardSlash) {
-      state.discard.push(slashCard);
+      if (source.equipment.weapon?.kind === "weapon_blade") {
+        const followSlash = consumeSlashLikeCard(state, source, "青龙偃月刀");
+        if (followSlash) {
+          pushEvent(state, "equip", `${source.name} 发动青龙偃月刀，对 ${target.name} 追加使用一张杀`);
+          resolveSlashOnTarget(state, source, target, followSlash, "青龙偃月刀追击的杀");
+          if (shouldDiscardSlash) {
+            state.discard.push(slashCard);
+          }
+          return;
+        }
+      }
+
+      if (shouldDiscardSlash) {
+        state.discard.push(slashCard);
+      }
+      return;
     }
-    return;
+  } else {
+    pushEvent(state, "skill", `${target.name} 受到铁骑影响，不能使用闪响应${slashLabel}`);
   }
 
   if (source.equipment.weapon?.kind === "weapon_ice_sword" && hasCardForIceSword(target)) {
@@ -908,6 +920,52 @@ function resolveSlashOnTarget(
   if (shouldDiscardSlash) {
     state.discard.push(slashCard);
   }
+}
+
+function canTargetUseDodgeAgainstSlash(state: GameState, source: PlayerState, target: PlayerState): boolean {
+  if (!hasSkill(state, source.id, STANDARD_SKILL_IDS.machaoTieqi)) {
+    return true;
+  }
+
+  const judgeCard = drawJudgmentCard(state, source);
+  if (!judgeCard) {
+    return true;
+  }
+
+  if (isRed(judgeCard)) {
+    pushEvent(state, "skill", `${source.name} 发动铁骑，判定为红色，${target.name} 不能使用闪`);
+    return false;
+  }
+
+  pushEvent(state, "skill", `${source.name} 发动铁骑，判定为黑色，${target.name} 可正常使用闪`);
+  return true;
+}
+
+function triggerJizhiOnTrickUse(state: GameState, actor: PlayerState, trickKind: CardKind): void {
+  if (!isNonDelayedTrickKind(trickKind)) {
+    return;
+  }
+
+  if (!hasSkill(state, actor.id, STANDARD_SKILL_IDS.huangyueyingJizhi)) {
+    return;
+  }
+
+  drawCards(state, actor.id, 1);
+  pushEvent(state, "skill", `${actor.name} 发动集智，摸了 1 张牌`);
+}
+
+function isNonDelayedTrickKind(kind: CardKind): boolean {
+  return (
+    kind === "dismantle" ||
+    kind === "snatch" ||
+    kind === "duel" ||
+    kind === "barbarian" ||
+    kind === "archery" ||
+    kind === "taoyuan" ||
+    kind === "harvest" ||
+    kind === "ex_nihilo" ||
+    kind === "collateral"
+  );
 }
 
 function hasCardForIceSword(target: PlayerState): boolean {
