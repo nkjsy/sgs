@@ -24,7 +24,7 @@
 4. 出牌阶段【杀】额定次数上限：1 次。
 5. 基础距离与攻击范围：按存活角色座次计算最短距离，并支持装备修正。
 6. 装备最小子集：
-   - 武器（攻击范围+1）。
+   - 武器（按牌名提供不同攻击范围）。
    - +1坐骑（其他角色计算到你的距离+1）。
    - -1坐骑（你计算到其他角色的距离-1）。
    - 支持装备替换时旧装备进入弃牌堆。
@@ -47,6 +47,7 @@
      - 仁王盾仅对黑色【杀】生效，红色【杀】可正常命中。
      - 青釭剑无视防具时，八卦阵不触发判定视为【闪】。
      - 方天画戟多目标【杀】下，仁王盾按目标分别判定生效。
+         - 青龙偃月刀追击链具备终止与上限边界：无后续【杀】即终止；有后续【杀】时可在连续【闪】下继续追击。
 7. 锦囊最小子集：
    - 【过河拆桥】：弃置目标 1 张手牌。
    - 【顺手牵羊】：距离 1 内获得目标 1 张手牌。
@@ -57,14 +58,51 @@
    - 【五谷丰登】：亮出与存活人数相同的牌并按座次依次分配。
    - 【借刀杀人】：指定持武器角色对次目标出【杀】，否则其武器被使用者获得。
    - 【无中生有】：目标摸两张牌。
-   - 借刀边界已覆盖：可被【无懈可击】抵消；强制出的【杀】可被【闪】响应。
+   - 借刀边界已覆盖：可被【无懈可击】抵消；强制出的【杀】可被【闪】响应；非法目标（不满足借刀合法性）不会消耗手牌。
+   - 借刀×装备联动边界（测试层）：
+      - 借刀强制出的【杀】在青龙偃月刀下，若目标打出【闪】且仍有后续【杀】可继续追击。
+      - 借刀强制出的【杀】在被【闪】后，若无后续【杀】则追击链终止。
+      - 借刀强制出杀可触发丈八蛇矛两牌转化；若不足两牌且无实体【杀】则无法出杀并转移武器。
+      - 借刀强制出杀时，丈八蛇矛优先消耗实体【杀】而非两牌转化。
+      - 借刀强制出的【杀】在青釭剑下无视八卦阵；非青釭武器下八卦阵可正常判定闪避。
+      - 借刀强制出的【杀】与仁王盾交互遵循颜色判定：黑色【杀】无效，红色【杀】正常命中。
+      - 借刀强制出的【杀】可触发贯石斧（弃两牌强制命中）、寒冰剑（防伤弃牌）、麒麟弓（伤后弃马）。
+      - 借刀强制杀在方天画戟下按借刀指定目标结算，不自动追加额外目标。
+   - 无懈响应优先级策略：
+     - 默认 `camp-first`（同阵营优先）。
+     - 支持 `seat-order`（按座次优先）作为可配置策略，已在普通/延时锦囊链路回归覆盖。
+       - 可通过 `createInitialGame(seed, { nullifyResponsePolicy })` 在初始化时注入策略。
    - 【无懈可击】：可对上述锦囊进行响应抵消（支持链式反制、群体锦囊按目标逐个结算）。
 8. 濒死与死亡基础流：体力 ≤ 0 进入救援，失败则死亡并判定胜负。
 9. 牌堆耗尽回洗弃牌堆（便于长局测试）。
 10. 判定区与延时锦囊最小子集：
    - 【乐不思蜀】：判定非红桃则跳过出牌阶段。
    - 【闪电】：判定黑桃2~9造成3点无来源伤害，未命中则传递给下家判定区。
+   - 判定区同名冲突（当前已实现牌型）：同一角色不可重复放置同名【乐不思蜀】或同名【闪电】；不同名可共存。
+   - 闪电传递边界：会跳过判定区已有闪电的角色；若其余角色均已有闪电则留在当前角色判定区。
+   - 同回合【乐不思蜀】与【闪电】共存时，按入判定区顺序依次结算，且乐不思蜀判定失败会使该回合跳过出牌阶段。
    - 延时锦囊在判定生效前支持【无懈可击】响应窗口（含链式反制）。
+   - 延时锦囊无懈链边界：支持“无懈→反无懈”后按最终链结果决定是否执行判定与效果。
+   - 同回合多张延时锦囊按入判定区顺序独立结算，每张牌各自重新发起无懈链。
+
+## 借刀专项矩阵（测试映射）
+
+用于快速验收“借刀杀人”当前已覆盖边界（标准身份场范围内）。
+
+| 类别 | 边界场景 | 对应测试名 | 当前状态 |
+| --- | --- | --- | --- |
+| 合法性 | 次目标不在持刀者攻击范围内，借刀动作无效且牌不消耗 | collateral should remain in hand when secondary target is out of holder range | 已覆盖 |
+| 响应链 | 借刀可被【无懈可击】抵消 | collateral should be canceled by nullify | 已覆盖 |
+| 响应链 | 强制出的【杀】可被【闪】响应 | forced slash from collateral should be dodgeable | 已覆盖 |
+| 失败分支 | 持刀者无法打出【杀】时，武器转移给使用者 | collateral should transfer weapon when holder cannot slash | 已覆盖 |
+| 青龙偃月刀 | 被【闪】后可继续追击；无后续【杀】时终止 | collateral forced slash should trigger blade follow-up on dodge；collateral blade follow-up should stop when holder has no extra slash | 已覆盖 |
+| 丈八蛇矛 | 两牌可转化【杀】；不足两牌且无【杀】无法出杀；实体【杀】优先 | collateral should allow spear virtual slash with two hand cards；collateral should transfer spear when holder has less than two cards and no slash；collateral should prefer real slash over spear conversion | 已覆盖 |
+| 青釭剑×八卦阵 | 青釭无视八卦判定；非青釭可正常八卦判定 | collateral forced slash with qinggang should bypass eight diagram；collateral forced slash without qinggang should allow eight diagram judgment | 已覆盖 |
+| 仁王盾 | 黑色【杀】无效；红色【杀】命中 | collateral forced black slash should be nullified by renwang shield；collateral forced red slash should bypass renwang shield restriction | 已覆盖 |
+| 贯石斧 | 被【闪】后可弃两牌令强制杀仍命中 | collateral forced slash should trigger axe forced hit after dodge | 已覆盖 |
+| 寒冰剑 | 命中前可防伤并弃目标两张牌 | collateral forced slash should trigger ice sword prevent-damage effect | 已覆盖 |
+| 麒麟弓 | 伤害后可弃目标坐骑 | collateral forced slash should trigger kylin bow horse discard | 已覆盖 |
+| 方天画戟 | 借刀强制杀不自动追加额外目标 | collateral forced slash with halberd should only affect designated target | 已覆盖 |
 
 ## 未覆盖（与官方规则存在差距）
 
@@ -74,7 +112,7 @@
    - 大部分装备牌与装备技能未实现。
 3. 武将技能系统（锁定技、触发技、优先级、时机冲突）未实现。
 4. 判定区与延时锦囊高级规则未实现：
-   - 判定区同名冲突、更多延时锦囊类型与完整合法性细则。
+   - 更多延时锦囊类型与完整合法性细则（当前同名冲突仅覆盖乐不思蜀/闪电）。
 5. 官方复杂结算细节：
    - 响应链、多层事件插入、结算终止与替代。
    - 完整“处于濒死状态时”的顺序细节。

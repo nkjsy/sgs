@@ -5,6 +5,7 @@ import {
   EndPlayPhaseAction,
   GameState,
   Identity,
+  NullifyResponsePolicy,
   PlayCardAction,
   PlayerState,
   TurnAction
@@ -34,13 +35,18 @@ const EQUIPMENT_KINDS: CardKind[] = [
 const DELAYED_TRICK_KINDS: CardKind[] = ["indulgence", "lightning"];
 const VIRTUAL_SPEAR_SLASH_CARD_ID = "__virtual_spear_slash__";
 
+export interface CreateInitialGameOptions {
+  nullifyResponsePolicy?: NullifyResponsePolicy;
+}
+
 /**
  * 创建一局 5 人身份局的初始状态。
  *
  * @param seed 固定随机种子，用于确保复盘一致。
+ * @param options 可选初始化配置。
  * @returns 初始化后的游戏状态。
  */
-export function createInitialGame(seed: number): GameState {
+export function createInitialGame(seed: number, options: CreateInitialGameOptions = {}): GameState {
   const identities: Identity[] = ["lord", "loyalist", "rebel", "rebel", "renegade"];
   const genders: Array<"male" | "female"> = ["male", "female", "male", "female", "male"];
   const players: PlayerState[] = identities.map((identity, index) => ({
@@ -76,7 +82,8 @@ export function createInitialGame(seed: number): GameState {
     slashUsedInTurn: 0,
     skipPlayPhaseForCurrentTurn: false,
     winner: null,
-    seed
+    seed,
+    nullifyResponsePolicy: options.nullifyResponsePolicy ?? "camp-first"
   };
 
   for (const player of players) {
@@ -474,11 +481,12 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
     pushEvent(state, "card", `${actor.name} 对 ${target.name} 使用杀`);
     const slashTargets = getSlashTargetsForResolution(state, actor, target);
     for (const slashTarget of slashTargets) {
-      resolveSlashOnTarget(state, actor, slashTarget, card);
+      resolveSlashOnTarget(state, actor, slashTarget, card, "杀", false);
       if (state.winner) {
         break;
       }
     }
+    state.discard.push(card);
     return;
   }
 
@@ -570,7 +578,8 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
     const slash = consumeSlashLikeCard(state, weaponHolder, "借刀杀人");
     if (slash) {
       pushEvent(state, "response", `${weaponHolder.name} 被迫对 ${slashTarget.name} 使用杀`);
-      resolveSlashOnTarget(state, weaponHolder, slashTarget, slash, "借刀杀人的杀");
+      resolveSlashOnTarget(state, weaponHolder, slashTarget, slash, "借刀杀人的杀", false);
+      state.discard.push(slash);
     } else if (weaponHolder.equipment.weapon) {
       const takenWeapon = weaponHolder.equipment.weapon;
       weaponHolder.equipment.weapon = null;
@@ -730,7 +739,8 @@ function resolveSlashOnTarget(
   source: PlayerState,
   target: PlayerState,
   slashCard: Card,
-  slashLabel = "杀"
+  slashLabel = "杀",
+  shouldDiscardSlash = true
 ): void {
   if (source.equipment.weapon?.kind === "weapon_double_sword" && source.gender !== target.gender) {
     if (target.hand.length > 0) {
@@ -750,12 +760,16 @@ function resolveSlashOnTarget(
 
   if (!armorIgnored && target.equipment.armor?.kind === "armor_renwang_shield" && isBlack(slashCard)) {
     pushEvent(state, "response", `${target.name} 的仁王盾使黑色${slashLabel}无效`);
-    state.discard.push(slashCard);
+    if (shouldDiscardSlash) {
+      state.discard.push(slashCard);
+    }
     return;
   }
 
   if (!armorIgnored && tryAutoDodgeWithEightDiagram(state, target)) {
-    state.discard.push(slashCard);
+    if (shouldDiscardSlash) {
+      state.discard.push(slashCard);
+    }
     return;
   }
 
@@ -770,7 +784,9 @@ function resolveSlashOnTarget(
       state.discard.push(discardA, discardB);
       pushEvent(state, "equip", `${source.name} 发动贯石斧，弃置两张手牌令${slashLabel}仍然生效`);
       dealDamage(state, source.id, target.id, 1);
-      state.discard.push(slashCard);
+      if (shouldDiscardSlash) {
+        state.discard.push(slashCard);
+      }
       return;
     }
 
@@ -778,13 +794,17 @@ function resolveSlashOnTarget(
       const followSlash = consumeSlashLikeCard(state, source, "青龙偃月刀");
       if (followSlash) {
         pushEvent(state, "equip", `${source.name} 发动青龙偃月刀，对 ${target.name} 追加使用一张杀`);
-        state.discard.push(slashCard);
         resolveSlashOnTarget(state, source, target, followSlash, "青龙偃月刀追击的杀");
+        if (shouldDiscardSlash) {
+          state.discard.push(slashCard);
+        }
         return;
       }
     }
 
-    state.discard.push(slashCard);
+    if (shouldDiscardSlash) {
+      state.discard.push(slashCard);
+    }
     return;
   }
 
@@ -793,7 +813,9 @@ function resolveSlashOnTarget(
     const second = discardOneCardForIceSword(state, target);
     if (first || second) {
       pushEvent(state, "equip", `${source.name} 发动寒冰剑，防止了本次伤害并弃置了 ${target.name} 的牌`);
-      state.discard.push(slashCard);
+      if (shouldDiscardSlash) {
+        state.discard.push(slashCard);
+      }
       return;
     }
   }
@@ -802,7 +824,9 @@ function resolveSlashOnTarget(
   if (source.equipment.weapon?.kind === "weapon_kylin_bow") {
     tryDiscardHorseByKylinBow(state, source, target);
   }
-  state.discard.push(slashCard);
+  if (shouldDiscardSlash) {
+    state.discard.push(slashCard);
+  }
 }
 
 function hasCardForIceSword(target: PlayerState): boolean {
@@ -1150,14 +1174,7 @@ function resolveDelayedTrickNullifyChain(
     let played = false;
     const responders = getAlivePlayersFrom(state, target.id);
     for (const responder of responders) {
-      const hasNullify = responder.hand.some((card) => card.kind === "nullify");
-      if (!hasNullify) {
-        continue;
-      }
-
-      const shouldPlay = !negated
-        ? isSameCamp(responder.identity, target.identity)
-        : !isSameCamp(responder.identity, target.identity);
+      const shouldPlay = shouldPlayDelayedNullify(state, responder, target, negated);
       if (!shouldPlay) {
         continue;
       }
@@ -1180,6 +1197,23 @@ function resolveDelayedTrickNullifyChain(
   }
 
   return negated;
+}
+
+function shouldPlayDelayedNullify(
+  state: GameState,
+  responder: PlayerState,
+  target: PlayerState,
+  currentlyNegated: boolean
+): boolean {
+  if (!responder.hand.some((card) => card.kind === "nullify")) {
+    return false;
+  }
+
+  if (state.nullifyResponsePolicy === "seat-order") {
+    return true;
+  }
+
+  return !currentlyNegated ? isSameCamp(responder.identity, target.identity) : !isSameCamp(responder.identity, target.identity);
 }
 
 /**
@@ -1353,6 +1387,10 @@ function shouldPlayNullify(
     return false;
   }
 
+  if (state.nullifyResponsePolicy === "seat-order") {
+    return true;
+  }
+
   const source = requireAlivePlayer(state, sourceId);
   const target = requireAlivePlayer(state, targetId);
 
@@ -1386,7 +1424,7 @@ function isInAttackRange(state: GameState, fromId: string, toId: string): boolea
  *
  * 规则：
  * - 基础攻击范围为 1。
- * - 装备武器后攻击范围 +1（当前仅实现一种武器示例）。
+ * - 装备武器后按武器牌名映射到对应射程。
  *
  * @param state 当前游戏状态。
  * @param playerId 角色编号。

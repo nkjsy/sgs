@@ -146,6 +146,38 @@ test("dismantle should be canceled by nullify", () => {
 });
 
 /**
+ * 验证无懈策略切换为 seat-order 时，非延时锦囊可按座次由来源方优先打出无懈。
+ */
+test("seat-order nullify policy should allow source-first nullify on trick", () => {
+  const state = createInitialGame(42, { nullifyResponsePolicy: "seat-order" });
+  const actor = state.players[0];
+  const target = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+
+  actor.hand = [
+    { id: "dismantle-seat-order-1", kind: "dismantle" },
+    { id: "nullify-seat-order-src-1", kind: "nullify" }
+  ];
+  target.hand = [{ id: "target-seat-order-card-1", kind: "dodge" }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "dismantle-seat-order-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hand.length, 1);
+  assert.ok(state.discard.some((card) => card.id === "nullify-seat-order-src-1"));
+});
+
+/**
  * 验证【决斗】的轮流打杀逻辑：目标无法继续打出【杀】时受到伤害。
  */
 test("duel should deal damage to first player who fails to play slash", () => {
@@ -260,6 +292,34 @@ test("weapon should increase attack range for slash target selection", () => {
 });
 
 /**
+ * 验证诸葛连弩不提高攻击范围（仅提供多次出杀能力）。
+ */
+test("crossbow should not extend slash attack range", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+
+  actor.hand = [
+    { id: "crossbow-range-1", kind: "weapon_crossbow" },
+    { id: "slash-crossbow-range-1", kind: "slash" }
+  ];
+
+  stepPhase(state);
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "crossbow-range-1",
+    targetId: actor.id
+  });
+
+  const slashTargets = getLegalActions(state)
+    .filter((action): action is PlayCardAction => action.type === "play-card" && action.cardId === "slash-crossbow-range-1")
+    .map((action) => action.targetId)
+    .sort();
+
+  assert.deepEqual(slashTargets, ["P2", "P5"]);
+});
+
+/**
  * 验证坐骑会影响距离，从而影响【顺手牵羊】合法目标。
  */
 test("horses should affect snatch target legality", () => {
@@ -319,6 +379,100 @@ test("indulgence should skip play phase on non-heart judgment", () => {
 });
 
 /**
+ * 验证同一目标判定区已有【乐不思蜀】时，不能再次放置同名延时锦囊。
+ */
+test("indulgence should not be placeable when target already has indulgence", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+    player.judgmentZone.delayedTricks = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "indulgence-dup-1", kind: "indulgence" }];
+  target.judgmentZone.delayedTricks = [{ id: "indulgence-existing-1", kind: "indulgence" }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "indulgence-dup-1",
+    targetId: target.id
+  });
+
+  assert.ok(actor.hand.some((card) => card.id === "indulgence-dup-1"));
+  assert.equal(target.judgmentZone.delayedTricks.filter((card) => card.kind === "indulgence").length, 1);
+});
+
+/**
+ * 验证自己判定区已有【闪电】时，不能再次放置同名延时锦囊。
+ */
+test("lightning should not be placeable when self already has lightning", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+    player.judgmentZone.delayedTricks = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "lightning-dup-1", kind: "lightning" }];
+  actor.judgmentZone.delayedTricks = [{ id: "lightning-existing-1", kind: "lightning" }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "lightning-dup-1",
+    targetId: actor.id
+  });
+
+  assert.ok(actor.hand.some((card) => card.id === "lightning-dup-1"));
+  assert.equal(actor.judgmentZone.delayedTricks.filter((card) => card.kind === "lightning").length, 1);
+});
+
+/**
+ * 验证【乐不思蜀】与【闪电】可在同一角色判定区共存（不同名允许）。
+ */
+test("indulgence and lightning should coexist in judgment zone", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+    player.judgmentZone.delayedTricks = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [
+    { id: "indulgence-coexist-1", kind: "indulgence" },
+    { id: "lightning-coexist-1", kind: "lightning" }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "indulgence-coexist-1",
+    targetId: target.id
+  });
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "lightning-coexist-1",
+    targetId: actor.id
+  });
+
+  assert.equal(target.judgmentZone.delayedTricks.some((card) => card.kind === "indulgence"), true);
+  assert.equal(actor.judgmentZone.delayedTricks.some((card) => card.kind === "lightning"), true);
+});
+
+/**
  * 验证【闪电】判定命中时造成 3 点无来源伤害。
  */
 test("lightning should deal 3 damage on spade 2-9 judgment", () => {
@@ -360,6 +514,132 @@ test("lightning should transfer on non-trigger judgment", () => {
 
   assert.equal(target.judgmentZone.delayedTricks.length, 0);
   assert.equal(next.judgmentZone.delayedTricks.some((card) => card.kind === "lightning"), true);
+});
+
+/**
+ * 验证闪电未命中传递时，会跳过判定区已有【闪电】的角色并传给下一个合法目标。
+ */
+test("lightning transfer should skip players who already have lightning", () => {
+  const state = createInitialGame(42);
+  const target = state.players[0];
+  const p2 = state.players[1];
+  const p3 = state.players[2];
+  const p4 = state.players[3];
+
+  for (const player of state.players) {
+    player.hand = [];
+    player.judgmentZone.delayedTricks = [];
+  }
+
+  state.currentPlayerId = target.id;
+  state.phase = "judge";
+  target.judgmentZone.delayedTricks = [{ id: "lightning-skip-1", kind: "lightning" }];
+  p2.judgmentZone.delayedTricks = [{ id: "lightning-existing-p2", kind: "lightning" }];
+  p3.judgmentZone.delayedTricks = [{ id: "lightning-existing-p3", kind: "lightning" }];
+  state.deck = [{ id: "judge-heart-skip-1", kind: "slash", suit: "heart", point: 1 }];
+
+  stepPhase(state);
+
+  assert.equal(target.judgmentZone.delayedTricks.length, 0);
+  assert.equal(p2.judgmentZone.delayedTricks.length, 1);
+  assert.equal(p3.judgmentZone.delayedTricks.length, 1);
+  assert.equal(p4.judgmentZone.delayedTricks.some((card) => card.id === "lightning-skip-1"), true);
+});
+
+/**
+ * 验证闪电未命中且其余存活角色判定区均已有闪电时，闪电留在当前角色判定区。
+ */
+test("lightning transfer should stay when all other players already have lightning", () => {
+  const state = createInitialGame(42);
+  const target = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+    player.judgmentZone.delayedTricks = [];
+  }
+
+  state.currentPlayerId = target.id;
+  state.phase = "judge";
+  target.judgmentZone.delayedTricks = [{ id: "lightning-stay-1", kind: "lightning" }];
+  state.players[1].judgmentZone.delayedTricks = [{ id: "lightning-existing-a", kind: "lightning" }];
+  state.players[2].judgmentZone.delayedTricks = [{ id: "lightning-existing-b", kind: "lightning" }];
+  state.players[3].judgmentZone.delayedTricks = [{ id: "lightning-existing-c", kind: "lightning" }];
+  state.players[4].judgmentZone.delayedTricks = [{ id: "lightning-existing-d", kind: "lightning" }];
+  state.deck = [{ id: "judge-heart-stay-1", kind: "slash", suit: "heart", point: 2 }];
+
+  stepPhase(state);
+
+  assert.equal(target.judgmentZone.delayedTricks.some((card) => card.id === "lightning-stay-1"), true);
+});
+
+/**
+ * 验证同回合存在【乐不思蜀】与【闪电】时：先乐后电按顺序结算，且乐失败仍跳过出牌阶段。
+ */
+test("indulgence then lightning should both resolve and still skip play phase", () => {
+  const state = createInitialGame(42);
+  const target = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+    player.judgmentZone.delayedTricks = [];
+  }
+
+  state.currentPlayerId = target.id;
+  state.phase = "judge";
+  target.judgmentZone.delayedTricks = [
+    { id: "indulgence-both-1", kind: "indulgence" },
+    { id: "lightning-both-1", kind: "lightning" }
+  ];
+  state.deck = [
+    { id: "judge-spade-both-ind-1", kind: "slash", suit: "spade", point: 7 },
+    { id: "judge-spade-both-light-1", kind: "slash", suit: "spade", point: 4 },
+    { id: "draw-buffer-both-1", kind: "dodge" },
+    { id: "draw-buffer-both-2", kind: "peach" }
+  ];
+
+  const hpBefore = target.hp;
+  stepPhase(state);
+  assert.equal(target.hp, hpBefore - 3);
+
+  stepPhase(state);
+  assert.equal(state.phase, "discard");
+  assert.ok(state.discard.some((card) => card.id === "indulgence-both-1"));
+  assert.ok(state.discard.some((card) => card.id === "lightning-both-1"));
+});
+
+/**
+ * 验证同回合存在【闪电】与【乐不思蜀】时：先电后乐也应独立结算，乐失败仍跳过出牌阶段。
+ */
+test("lightning then indulgence should both resolve and still skip play phase", () => {
+  const state = createInitialGame(42);
+  const target = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+    player.judgmentZone.delayedTricks = [];
+  }
+
+  state.currentPlayerId = target.id;
+  state.phase = "judge";
+  target.judgmentZone.delayedTricks = [
+    { id: "lightning-both-2", kind: "lightning" },
+    { id: "indulgence-both-2", kind: "indulgence" }
+  ];
+  state.deck = [
+    { id: "judge-spade-both-light-2", kind: "slash", suit: "spade", point: 4 },
+    { id: "judge-spade-both-ind-2", kind: "slash", suit: "spade", point: 8 },
+    { id: "draw-buffer-both-3", kind: "dodge" },
+    { id: "draw-buffer-both-4", kind: "peach" }
+  ];
+
+  const hpBefore = target.hp;
+  stepPhase(state);
+  assert.equal(target.hp, hpBefore - 3);
+
+  stepPhase(state);
+  assert.equal(state.phase, "discard");
+  assert.ok(state.discard.some((card) => card.id === "lightning-both-2"));
+  assert.ok(state.discard.some((card) => card.id === "indulgence-both-2"));
 });
 
 /**
@@ -415,6 +695,175 @@ test("lightning should be nullifiable before damage judgment", () => {
   assert.equal(target.hp, hpBefore);
   assert.ok(state.discard.some((card) => card.id === "lightning-3"));
   assert.ok(state.discard.some((card) => card.id === "nullify-l-1"));
+});
+
+/**
+ * 验证无懈策略切换为 seat-order 时，延时锦囊可被座次靠前的敌方先手无懈抵消。
+ */
+test("seat-order nullify policy should allow enemy-first nullify on delayed trick", () => {
+  const state = createInitialGame(42, { nullifyResponsePolicy: "seat-order" });
+  const target = state.players[1];
+  const enemy = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = target.id;
+  state.phase = "judge";
+  target.judgmentZone.delayedTricks = [{ id: "indulgence-seat-order-1", kind: "indulgence" }];
+  enemy.hand = [{ id: "nullify-seat-order-enemy-1", kind: "nullify" }];
+  state.deck = [
+    { id: "judge-spade-seat-order-1", kind: "slash", suit: "spade", point: 6 },
+    { id: "draw-buffer-seat-order-1", kind: "dodge" },
+    { id: "draw-buffer-seat-order-2", kind: "peach" }
+  ];
+
+  stepPhase(state);
+  stepPhase(state);
+
+  assert.equal(state.phase, "play");
+  assert.ok(state.discard.some((card) => card.id === "nullify-seat-order-enemy-1"));
+});
+
+/**
+ * 验证延时锦囊无懈链可被反制：乐不思蜀被“无懈→反无懈”后恢复生效。
+ */
+test("indulgence should apply when delayed nullify is countered", () => {
+  const state = createInitialGame(42);
+  const target = state.players[0];
+  const ally = state.players[1];
+  const enemy = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = target.id;
+  state.phase = "judge";
+  target.judgmentZone.delayedTricks = [{ id: "indulgence-chain-1", kind: "indulgence" }];
+  ally.hand = [{ id: "nullify-ind-chain-ally", kind: "nullify" }];
+  enemy.hand = [{ id: "nullify-ind-chain-enemy", kind: "nullify" }];
+  state.deck = [
+    { id: "judge-spade-chain-ind-1", kind: "slash", suit: "spade", point: 4 },
+    { id: "draw-buffer-chain-ind-1", kind: "dodge" },
+    { id: "draw-buffer-chain-ind-2", kind: "peach" }
+  ];
+
+  stepPhase(state);
+  stepPhase(state);
+
+  assert.equal(state.phase, "discard");
+  assert.ok(state.discard.some((card) => card.id === "nullify-ind-chain-ally"));
+  assert.ok(state.discard.some((card) => card.id === "nullify-ind-chain-enemy"));
+  assert.ok(state.discard.some((card) => card.id === "judge-spade-chain-ind-1"));
+});
+
+/**
+ * 验证延时锦囊无懈链可被反制：闪电被“无懈→反无懈”后恢复判定并正常命中伤害。
+ */
+test("lightning should still hit when delayed nullify is countered", () => {
+  const state = createInitialGame(42);
+  const target = state.players[2];
+  const ally = state.players[3];
+  const enemy = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = target.id;
+  state.phase = "judge";
+  target.judgmentZone.delayedTricks = [{ id: "lightning-chain-1", kind: "lightning" }];
+  ally.hand = [{ id: "nullify-light-chain-ally", kind: "nullify" }];
+  enemy.hand = [{ id: "nullify-light-chain-enemy", kind: "nullify" }];
+  state.deck = [{ id: "judge-spade-chain-light-1", kind: "slash", suit: "spade", point: 4 }];
+
+  const hpBefore = target.hp;
+  stepPhase(state);
+
+  assert.equal(target.hp, hpBefore - 3);
+  assert.ok(state.discard.some((card) => card.id === "nullify-light-chain-ally"));
+  assert.ok(state.discard.some((card) => card.id === "nullify-light-chain-enemy"));
+  assert.ok(state.discard.some((card) => card.id === "judge-spade-chain-light-1"));
+});
+
+/**
+ * 验证同回合多张延时锦囊按顺序独立结算：前者被无懈不影响后者判定生效。
+ */
+test("multiple delayed tricks should resolve in order with independent nullify state", () => {
+  const state = createInitialGame(42);
+  const target = state.players[0];
+  const ally = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = target.id;
+  state.phase = "judge";
+  target.judgmentZone.delayedTricks = [
+    { id: "indulgence-seq-1", kind: "indulgence" },
+    { id: "lightning-seq-1", kind: "lightning" }
+  ];
+  ally.hand = [{ id: "nullify-seq-ind-1", kind: "nullify" }];
+  state.deck = [
+    { id: "judge-spade-seq-light-1", kind: "slash", suit: "spade", point: 5 },
+    { id: "draw-buffer-seq-1", kind: "dodge" },
+    { id: "draw-buffer-seq-2", kind: "peach" }
+  ];
+
+  const hpBefore = target.hp;
+  stepPhase(state);
+  assert.equal(target.hp, hpBefore - 3);
+
+  stepPhase(state);
+  assert.equal(state.phase, "play");
+  assert.ok(state.discard.some((card) => card.id === "nullify-seq-ind-1"));
+  assert.ok(state.discard.some((card) => card.id === "judge-spade-seq-light-1"));
+});
+
+/**
+ * 验证同回合多张延时锦囊各自拥有独立无懈链：前一张可被反无懈，后一张仍可重新发起无懈抵消。
+ */
+test("multiple delayed tricks should each start a fresh nullify chain", () => {
+  const state = createInitialGame(42);
+  const target = state.players[0];
+  const ally = state.players[1];
+  const enemy = state.players[2];
+  const next = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = target.id;
+  state.phase = "judge";
+  target.judgmentZone.delayedTricks = [
+    { id: "indulgence-chain-seq-1", kind: "indulgence" },
+    { id: "lightning-chain-seq-1", kind: "lightning" }
+  ];
+  ally.hand = [{ id: "nullify-chain-seq-ally-1", kind: "nullify" }];
+  enemy.hand = [{ id: "nullify-chain-seq-enemy-1", kind: "nullify" }];
+  state.deck = [
+    { id: "judge-spade-chain-seq-ind-1", kind: "slash", suit: "spade", point: 4 },
+    { id: "judge-heart-chain-seq-light-1", kind: "slash", suit: "heart", point: 5 },
+    { id: "draw-buffer-chain-seq-1", kind: "dodge" },
+    { id: "draw-buffer-chain-seq-2", kind: "peach" }
+  ];
+
+  const hpBefore = target.hp;
+  stepPhase(state);
+
+  assert.equal(target.hp, hpBefore);
+  assert.ok(state.discard.some((card) => card.id === "nullify-chain-seq-ally-1"));
+  assert.ok(state.discard.some((card) => card.id === "nullify-chain-seq-enemy-1"));
+  assert.ok(state.discard.some((card) => card.id === "judge-spade-chain-seq-ind-1"));
+  assert.ok(state.discard.some((card) => card.id === "judge-heart-chain-seq-light-1"));
+  assert.equal(next.judgmentZone.delayedTricks.some((card) => card.kind === "lightning"), true);
+
+  stepPhase(state);
+  assert.equal(state.phase, "discard");
 });
 
 /**
@@ -550,6 +999,74 @@ test("collateral should transfer weapon when holder cannot slash", () => {
 });
 
 /**
+ * 验证借刀指定越界次目标时动作无效，手牌不应被消耗。
+ */
+test("collateral should remain in hand when secondary target is out of holder range", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const weaponHolder = state.players[2];
+  const slashTarget = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "collateral-invalid-range-1", kind: "collateral" }];
+  weaponHolder.equipment.weapon = { id: "holder-crossbow-invalid-1", kind: "weapon_crossbow", suit: "club", point: 1 };
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "collateral-invalid-range-1",
+    targetId: weaponHolder.id,
+    secondaryTargetId: slashTarget.id
+  });
+
+  assert.ok(actor.hand.some((card) => card.id === "collateral-invalid-range-1"));
+  assert.equal(state.discard.some((card) => card.id === "collateral-invalid-range-1"), false);
+});
+
+/**
+ * 验证借刀强制杀在方天画戟下仅结算指定次目标，不会自动追加额外目标。
+ */
+test("collateral forced slash with halberd should only affect designated target", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const weaponHolder = state.players[1];
+  const slashTarget = state.players[2];
+  const otherA = state.players[3];
+  const otherB = state.players[4];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "collateral-halberd-1", kind: "collateral" }];
+  weaponHolder.equipment.weapon = { id: "holder-halberd-weapon-1", kind: "weapon_halberd", suit: "diamond", point: 12 };
+  weaponHolder.hand = [{ id: "holder-halberd-slash-1", kind: "slash", suit: "spade", point: 8 }];
+
+  const hpTargetBefore = slashTarget.hp;
+  const hpOtherABefore = otherA.hp;
+  const hpOtherBBefore = otherB.hp;
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "collateral-halberd-1",
+    targetId: weaponHolder.id,
+    secondaryTargetId: slashTarget.id
+  });
+
+  assert.equal(slashTarget.hp, hpTargetBefore - 1);
+  assert.equal(otherA.hp, hpOtherABefore);
+  assert.equal(otherB.hp, hpOtherBBefore);
+});
+
+/**
  * 验证【五谷丰登】可按目标被【无懈可击】抵消。
  */
 test("harvest should be nullifiable per target", () => {
@@ -652,6 +1169,439 @@ test("forced slash from collateral should be dodgeable", () => {
   assert.equal(slashTarget.hp, hpBefore);
   assert.ok(state.discard.some((card) => card.id === "holder-slash-2"));
   assert.ok(state.discard.some((card) => card.id === "target-dodge-2"));
+});
+
+/**
+ * 验证借刀强制出的【杀】在青釭剑下会无视八卦阵，不触发判定闪避。
+ */
+test("collateral forced slash with qinggang should bypass eight diagram", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const weaponHolder = state.players[1];
+  const slashTarget = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "collateral-qinggang-1", kind: "collateral" }];
+  weaponHolder.equipment.weapon = {
+    id: "holder-qinggang-weapon-1",
+    kind: "weapon_qinggang_sword",
+    suit: "spade",
+    point: 6
+  };
+  weaponHolder.hand = [{ id: "holder-qinggang-slash-1", kind: "slash", suit: "spade", point: 9 }];
+  slashTarget.equipment.armor = { id: "target-eight-qinggang-1", kind: "armor_eight_diagram", suit: "spade", point: 2 };
+  state.deck = [{ id: "judge-red-collateral-qg-1", kind: "peach", suit: "heart", point: 7 }];
+
+  const hpBefore = slashTarget.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "collateral-qinggang-1",
+    targetId: weaponHolder.id,
+    secondaryTargetId: slashTarget.id
+  });
+
+  assert.equal(slashTarget.hp, hpBefore - 1);
+  assert.equal(state.discard.some((card) => card.id === "judge-red-collateral-qg-1"), false);
+});
+
+/**
+ * 验证借刀强制出的【杀】在非青釭武器下，八卦阵会正常判定并可闪避。
+ */
+test("collateral forced slash without qinggang should allow eight diagram judgment", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const weaponHolder = state.players[1];
+  const slashTarget = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "collateral-normal-8d-1", kind: "collateral" }];
+  weaponHolder.equipment.weapon = { id: "holder-blade-8d-1", kind: "weapon_blade", suit: "spade", point: 5 };
+  weaponHolder.hand = [{ id: "holder-blade-slash-8d-1", kind: "slash", suit: "spade", point: 9 }];
+  slashTarget.equipment.armor = { id: "target-eight-normal-1", kind: "armor_eight_diagram", suit: "club", point: 2 };
+  state.deck = [{ id: "judge-red-collateral-normal-1", kind: "peach", suit: "heart", point: 7 }];
+
+  const hpBefore = slashTarget.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "collateral-normal-8d-1",
+    targetId: weaponHolder.id,
+    secondaryTargetId: slashTarget.id
+  });
+
+  assert.equal(slashTarget.hp, hpBefore);
+  assert.ok(state.discard.some((card) => card.id === "judge-red-collateral-normal-1"));
+});
+
+/**
+ * 验证借刀强制出的黑色【杀】会被仁王盾无效化。
+ */
+test("collateral forced black slash should be nullified by renwang shield", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const weaponHolder = state.players[1];
+  const slashTarget = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "collateral-rw-black-1", kind: "collateral" }];
+  weaponHolder.equipment.weapon = { id: "holder-rw-black-weapon-1", kind: "weapon_blade", suit: "spade", point: 5 };
+  weaponHolder.hand = [{ id: "holder-rw-black-slash-1", kind: "slash", suit: "spade", point: 9 }];
+  slashTarget.equipment.armor = { id: "target-rw-black-armor-1", kind: "armor_renwang_shield", suit: "club", point: 2 };
+
+  const hpBefore = slashTarget.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "collateral-rw-black-1",
+    targetId: weaponHolder.id,
+    secondaryTargetId: slashTarget.id
+  });
+
+  assert.equal(slashTarget.hp, hpBefore);
+  assert.ok(state.discard.some((card) => card.id === "holder-rw-black-slash-1"));
+});
+
+/**
+ * 验证借刀强制出的红色【杀】不会被仁王盾抵消。
+ */
+test("collateral forced red slash should bypass renwang shield restriction", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const weaponHolder = state.players[1];
+  const slashTarget = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "collateral-rw-red-1", kind: "collateral" }];
+  weaponHolder.equipment.weapon = { id: "holder-rw-red-weapon-1", kind: "weapon_blade", suit: "spade", point: 5 };
+  weaponHolder.hand = [{ id: "holder-rw-red-slash-1", kind: "slash", suit: "heart", point: 10 }];
+  slashTarget.equipment.armor = { id: "target-rw-red-armor-1", kind: "armor_renwang_shield", suit: "club", point: 2 };
+
+  const hpBefore = slashTarget.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "collateral-rw-red-1",
+    targetId: weaponHolder.id,
+    secondaryTargetId: slashTarget.id
+  });
+
+  assert.equal(slashTarget.hp, hpBefore - 1);
+  assert.ok(state.discard.some((card) => card.id === "holder-rw-red-slash-1"));
+});
+
+/**
+ * 验证借刀强制出杀时，持刀者可用丈八蛇矛将两张手牌转化为【杀】。
+ */
+test("collateral should allow spear virtual slash with two hand cards", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const weaponHolder = state.players[1];
+  const slashTarget = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "collateral-spear-1", kind: "collateral" }];
+  weaponHolder.equipment.weapon = { id: "holder-spear-weapon-1", kind: "weapon_spear", suit: "spade", point: 12 };
+  weaponHolder.hand = [
+    { id: "holder-spear-sub-a", kind: "dodge", suit: "diamond", point: 4 },
+    { id: "holder-spear-sub-b", kind: "peach", suit: "heart", point: 5 }
+  ];
+  slashTarget.hand = [];
+
+  const hpBefore = slashTarget.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "collateral-spear-1",
+    targetId: weaponHolder.id,
+    secondaryTargetId: slashTarget.id
+  });
+
+  assert.equal(slashTarget.hp, hpBefore - 1);
+  assert.equal(weaponHolder.hand.length, 0);
+  assert.ok(state.discard.some((card) => card.id === "holder-spear-sub-a"));
+  assert.ok(state.discard.some((card) => card.id === "holder-spear-sub-b"));
+});
+
+/**
+ * 验证借刀强制出杀时，丈八蛇矛优先使用实体【杀】而非两牌转化。
+ */
+test("collateral should prefer real slash over spear conversion", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const weaponHolder = state.players[1];
+  const slashTarget = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "collateral-spear-priority-1", kind: "collateral" }];
+  weaponHolder.equipment.weapon = { id: "holder-spear-priority-weapon", kind: "weapon_spear", suit: "spade", point: 12 };
+  weaponHolder.hand = [
+    { id: "holder-spear-priority-slash", kind: "slash", suit: "spade", point: 9 },
+    { id: "holder-spear-priority-a", kind: "dodge", suit: "diamond", point: 4 },
+    { id: "holder-spear-priority-b", kind: "peach", suit: "heart", point: 5 }
+  ];
+
+  const hpBefore = slashTarget.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "collateral-spear-priority-1",
+    targetId: weaponHolder.id,
+    secondaryTargetId: slashTarget.id
+  });
+
+  assert.equal(slashTarget.hp, hpBefore - 1);
+  assert.equal(weaponHolder.hand.length, 2);
+  assert.ok(weaponHolder.hand.some((card) => card.id === "holder-spear-priority-a"));
+  assert.ok(weaponHolder.hand.some((card) => card.id === "holder-spear-priority-b"));
+});
+
+/**
+ * 验证借刀强制出杀时，丈八蛇矛手牌不足两张则不能转化，武器被获得。
+ */
+test("collateral should transfer spear when holder has less than two cards and no slash", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const weaponHolder = state.players[1];
+  const slashTarget = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "collateral-spear-2", kind: "collateral" }];
+  weaponHolder.equipment.weapon = { id: "holder-spear-weapon-2", kind: "weapon_spear", suit: "spade", point: 12 };
+  weaponHolder.hand = [{ id: "holder-only-one-card", kind: "dodge", suit: "diamond", point: 7 }];
+
+  const hpBefore = slashTarget.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "collateral-spear-2",
+    targetId: weaponHolder.id,
+    secondaryTargetId: slashTarget.id
+  });
+
+  assert.equal(slashTarget.hp, hpBefore);
+  assert.equal(weaponHolder.equipment.weapon, null);
+  assert.ok(actor.hand.some((card) => card.id === "holder-spear-weapon-2"));
+  assert.equal(weaponHolder.hand.length, 1);
+});
+
+/**
+ * 验证借刀强制出的【杀】在青龙偃月刀下可被【闪】后继续追击。
+ */
+test("collateral forced slash should trigger blade follow-up on dodge", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const weaponHolder = state.players[1];
+  const slashTarget = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "collateral-blade-chain-1", kind: "collateral" }];
+  weaponHolder.equipment.weapon = { id: "holder-blade-chain-weapon", kind: "weapon_blade", suit: "spade", point: 5 };
+  weaponHolder.hand = [
+    { id: "holder-blade-chain-slash-1", kind: "slash", suit: "club", point: 9 },
+    { id: "holder-blade-chain-slash-2", kind: "slash", suit: "spade", point: 10 }
+  ];
+  slashTarget.hand = [{ id: "target-blade-chain-dodge-1", kind: "dodge", suit: "diamond", point: 6 }];
+
+  const hpBefore = slashTarget.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "collateral-blade-chain-1",
+    targetId: weaponHolder.id,
+    secondaryTargetId: slashTarget.id
+  });
+
+  assert.equal(slashTarget.hp, hpBefore - 1);
+  assert.equal(weaponHolder.hand.length, 0);
+  assert.equal(state.discard.filter((card) => card.id.startsWith("holder-blade-chain-slash-")).length, 2);
+  assert.ok(state.discard.some((card) => card.id === "target-blade-chain-dodge-1"));
+});
+
+/**
+ * 验证借刀强制出的【杀】在被【闪】后，若无后续【杀】则青龙追击链终止。
+ */
+test("collateral blade follow-up should stop when holder has no extra slash", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const weaponHolder = state.players[1];
+  const slashTarget = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "collateral-blade-stop-1", kind: "collateral" }];
+  weaponHolder.equipment.weapon = { id: "holder-blade-stop-weapon", kind: "weapon_blade", suit: "spade", point: 5 };
+  weaponHolder.hand = [{ id: "holder-blade-stop-slash-1", kind: "slash", suit: "club", point: 9 }];
+  slashTarget.hand = [{ id: "target-blade-stop-dodge-1", kind: "dodge", suit: "diamond", point: 6 }];
+
+  const hpBefore = slashTarget.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "collateral-blade-stop-1",
+    targetId: weaponHolder.id,
+    secondaryTargetId: slashTarget.id
+  });
+
+  assert.equal(slashTarget.hp, hpBefore);
+  assert.equal(weaponHolder.hand.length, 0);
+  assert.equal(state.discard.filter((card) => card.id.startsWith("holder-blade-stop-slash-")).length, 1);
+  assert.ok(state.discard.some((card) => card.id === "target-blade-stop-dodge-1"));
+});
+
+/**
+ * 验证借刀强制出的【杀】在贯石斧下可弃两牌强制命中。
+ */
+test("collateral forced slash should trigger axe forced hit after dodge", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const weaponHolder = state.players[1];
+  const slashTarget = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "collateral-axe-1", kind: "collateral" }];
+  weaponHolder.equipment.weapon = { id: "holder-axe-weapon-1", kind: "weapon_axe", suit: "diamond", point: 5 };
+  weaponHolder.hand = [
+    { id: "holder-axe-slash-1", kind: "slash", suit: "spade", point: 9 },
+    { id: "holder-axe-discard-a", kind: "dodge", suit: "diamond", point: 2 },
+    { id: "holder-axe-discard-b", kind: "peach", suit: "heart", point: 3 }
+  ];
+  slashTarget.hand = [{ id: "target-axe-dodge-1", kind: "dodge", suit: "diamond", point: 6 }];
+
+  const hpBefore = slashTarget.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "collateral-axe-1",
+    targetId: weaponHolder.id,
+    secondaryTargetId: slashTarget.id
+  });
+
+  assert.equal(slashTarget.hp, hpBefore - 1);
+  assert.equal(weaponHolder.hand.length, 0);
+  assert.ok(state.discard.some((card) => card.id === "holder-axe-discard-a"));
+  assert.ok(state.discard.some((card) => card.id === "holder-axe-discard-b"));
+});
+
+/**
+ * 验证借刀强制出的【杀】在寒冰剑下可防止伤害并弃置目标两张牌。
+ */
+test("collateral forced slash should trigger ice sword prevent-damage effect", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const weaponHolder = state.players[1];
+  const slashTarget = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "collateral-ice-1", kind: "collateral" }];
+  weaponHolder.equipment.weapon = { id: "holder-ice-weapon-1", kind: "weapon_ice_sword", suit: "spade", point: 2 };
+  weaponHolder.hand = [{ id: "holder-ice-slash-1", kind: "slash", suit: "spade", point: 9 }];
+  slashTarget.hand = [
+    { id: "target-ice-card-a", kind: "peach", suit: "heart", point: 7 },
+    { id: "target-ice-card-b", kind: "snatch", suit: "heart", point: 8 }
+  ];
+
+  const hpBefore = slashTarget.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "collateral-ice-1",
+    targetId: weaponHolder.id,
+    secondaryTargetId: slashTarget.id
+  });
+
+  assert.equal(slashTarget.hp, hpBefore);
+  assert.equal(slashTarget.hand.length, 0);
+  assert.ok(state.discard.some((card) => card.id === "target-ice-card-a"));
+  assert.ok(state.discard.some((card) => card.id === "target-ice-card-b"));
+});
+
+/**
+ * 验证借刀强制出的【杀】造成伤害后可触发麒麟弓弃马。
+ */
+test("collateral forced slash should trigger kylin bow horse discard", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const weaponHolder = state.players[1];
+  const slashTarget = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "collateral-kylin-1", kind: "collateral" }];
+  weaponHolder.equipment.weapon = { id: "holder-kylin-weapon-1", kind: "weapon_kylin_bow", suit: "heart", point: 5 };
+  weaponHolder.hand = [{ id: "holder-kylin-slash-1", kind: "slash", suit: "spade", point: 9 }];
+  slashTarget.equipment.horsePlus = { id: "target-kylin-horse-1", kind: "horse_jueying", suit: "spade", point: 5 };
+
+  const hpBefore = slashTarget.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "collateral-kylin-1",
+    targetId: weaponHolder.id,
+    secondaryTargetId: slashTarget.id
+  });
+
+  assert.equal(slashTarget.hp, hpBefore - 1);
+  assert.equal(slashTarget.equipment.horsePlus, null);
+  assert.ok(state.discard.some((card) => card.id === "target-kylin-horse-1"));
 });
 
 /**
@@ -1001,6 +1951,34 @@ test("halberd should add up to two extra slash targets when slash is last hand c
 });
 
 /**
+ * 验证方天画戟多目标结算时，实体【杀】仅进入一次弃牌堆。
+ */
+test("halberd multi-target should discard physical slash only once", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const primary = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.equipment.weapon = { id: "halberd-discard-1", kind: "weapon_halberd", suit: "diamond", point: 12 };
+  actor.hand = [{ id: "slash-halberd-discard-1", kind: "slash", suit: "spade", point: 8 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-halberd-discard-1",
+    targetId: primary.id
+  });
+
+  const slashDiscardCount = state.discard.filter((card) => card.id === "slash-halberd-discard-1").length;
+  assert.equal(slashDiscardCount, 1);
+});
+
+/**
  * 验证雌雄双股剑对异性目标可触发弃牌分支。
  */
 test("double sword should force opposite-gender target to discard when possible", () => {
@@ -1087,6 +2065,75 @@ test("blade should follow up with another slash after dodge", () => {
   });
 
   assert.equal(target.hp, hpBefore - 1);
+});
+
+/**
+ * 验证青龙偃月刀在无后续可用【杀】时应终止追击链。
+ */
+test("blade follow-up should stop when no slash remains", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.equipment.weapon = { id: "blade-stop-1", kind: "weapon_blade", suit: "spade", point: 5 };
+  actor.hand = [{ id: "slash-stop-1", kind: "slash", suit: "club", point: 9 }];
+  target.hand = [{ id: "target-dodge-stop-1", kind: "dodge", suit: "diamond", point: 6 }];
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-stop-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, hpBefore);
+});
+
+/**
+ * 验证青龙偃月刀可在连续闪避下持续追击，直到目标无闪或攻击方无可用【杀】。
+ */
+test("blade follow-up should chain across multiple dodges within slash limit", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.equipment.weapon = { id: "blade-chain-1", kind: "weapon_blade", suit: "spade", point: 5 };
+  actor.hand = [
+    { id: "slash-chain-1", kind: "slash", suit: "club", point: 9 },
+    { id: "slash-chain-2", kind: "slash", suit: "spade", point: 10 },
+    { id: "slash-chain-3", kind: "slash", suit: "diamond", point: 11 }
+  ];
+  target.hand = [
+    { id: "target-dodge-chain-1", kind: "dodge", suit: "diamond", point: 6 },
+    { id: "target-dodge-chain-2", kind: "dodge", suit: "heart", point: 2 }
+  ];
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-chain-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, hpBefore - 1);
+  assert.equal(actor.hand.length, 0);
+  assert.equal(target.hand.length, 0);
+  assert.equal(state.discard.filter((card) => card.id.startsWith("slash-chain-")).length, 3);
+  assert.equal(state.discard.filter((card) => card.id.startsWith("target-dodge-chain-")).length, 2);
 });
 
 /**

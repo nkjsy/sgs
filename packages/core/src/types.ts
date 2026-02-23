@@ -10,6 +10,7 @@ export type Gender = "male" | "female";
 export type Phase = "judge" | "draw" | "play" | "discard" | "end";
 
 export type CardSuit = "spade" | "heart" | "club" | "diamond";
+export type NullifyResponsePolicy = "camp-first" | "seat-order";
 
 /**
  * 定义当前可用的基础卡牌类型。
@@ -181,6 +182,8 @@ export interface GameState {
   winner: "lord-side" | "rebel-side" | "renegade" | null;
   /** 随机种子。 */
   seed: number;
+  /** 无懈响应优先级策略。 */
+  nullifyResponsePolicy: NullifyResponsePolicy;
 }
 
 /**
