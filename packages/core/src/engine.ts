@@ -47,6 +47,7 @@ const VIRTUAL_GUOSE_CARD_ID_PREFIX = "__virtual_guose__::";
 const VIRTUAL_QIXI_CARD_ID_PREFIX = "__virtual_qixi__::";
 const VIRTUAL_LIJIAN_CARD_ID_PREFIX = "__virtual_lijian__::";
 const VIRTUAL_QINGNANG_CARD_ID_PREFIX = "__virtual_qingnang__::";
+const DYING_RESOLUTION_DEPTH = new WeakMap<GameState, number>();
 
 export interface CreateInitialGameOptions {
   nullifyResponsePolicy?: NullifyResponsePolicy;
@@ -2011,14 +2012,19 @@ function dealDamage(state: GameState, sourceId: string, targetId: string, amount
     return;
   }
 
-  target.hp -= amount;
-  pushEvent(state, "damage", `${source.name} 对 ${target.name} 造成 ${amount} 点伤害`);
-  tryTriggerYiji(state, target.id, amount);
-  tryTriggerJianxiong(state, source, target);
-  tryTriggerFankui(state, source.id, target.id, amount);
-  tryTriggerGanglie(state, source.id, target.id, amount);
+  enterDyingResolution(state);
+  try {
+    target.hp -= amount;
+    pushEvent(state, "damage", `${source.name} 对 ${target.name} 造成 ${amount} 点伤害`);
+    tryTriggerYiji(state, target.id, amount);
+    tryTriggerJianxiong(state, source, target);
+    tryTriggerFankui(state, source.id, target.id, amount);
+    tryTriggerGanglie(state, source.id, target.id, amount);
 
-  resolveDyingAndDeath(state, target);
+    resolveDyingAndDeath(state, target);
+  } finally {
+    leaveDyingResolution(state);
+  }
 }
 
 /**
@@ -2035,11 +2041,16 @@ function dealDamageWithoutSource(state: GameState, targetId: string, amount: num
     return;
   }
 
-  target.hp -= amount;
-  pushEvent(state, "damage", `${target.name} 受到 ${reason} 造成的 ${amount} 点无来源伤害`);
-  tryTriggerYiji(state, target.id, amount);
+  enterDyingResolution(state);
+  try {
+    target.hp -= amount;
+    pushEvent(state, "damage", `${target.name} 受到 ${reason} 造成的 ${amount} 点无来源伤害`);
+    tryTriggerYiji(state, target.id, amount);
 
-  resolveDyingAndDeath(state, target);
+    resolveDyingAndDeath(state, target);
+  } finally {
+    leaveDyingResolution(state);
+  }
 }
 
 function tryTriggerYiji(state: GameState, targetId: string, damageAmount: number): void {
@@ -2515,10 +2526,15 @@ function tryTriggerXiaojiAfterEquipmentLoss(state: GameState, owner: PlayerState
 
 function loseHp(state: GameState, targetId: string, amount: number, reason: string): void {
   const target = requireAlivePlayer(state, targetId);
-  target.hp -= amount;
-  pushEvent(state, "damage", `${target.name} 因${reason}失去 ${amount} 点体力`);
+  enterDyingResolution(state);
+  try {
+    target.hp -= amount;
+    pushEvent(state, "damage", `${target.name} 因${reason}失去 ${amount} 点体力`);
 
-  resolveDyingAndDeath(state, target);
+    resolveDyingAndDeath(state, target);
+  } finally {
+    leaveDyingResolution(state);
+  }
 }
 
 function chooseFanjianSuit(target: PlayerState): CardSuit {
@@ -2698,7 +2714,22 @@ function resolveDyingAndDeath(state: GameState, target: PlayerState): void {
   target.alive = false;
   clearDeadPlayerCards(state, target);
   pushEvent(state, "death", `${target.name} 阵亡`);
-  updateWinner(state);
+}
+
+function enterDyingResolution(state: GameState): void {
+  const depth = DYING_RESOLUTION_DEPTH.get(state) ?? 0;
+  DYING_RESOLUTION_DEPTH.set(state, depth + 1);
+}
+
+function leaveDyingResolution(state: GameState): void {
+  const depth = DYING_RESOLUTION_DEPTH.get(state) ?? 0;
+  if (depth <= 1) {
+    DYING_RESOLUTION_DEPTH.delete(state);
+    updateWinner(state);
+    return;
+  }
+
+  DYING_RESOLUTION_DEPTH.set(state, depth - 1);
 }
 
 function getRescueCandidatesInOrder(state: GameState, targetId: string): PlayerState[] {

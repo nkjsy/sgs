@@ -4525,6 +4525,45 @@ test("dying flow should emit enter-round-exit events", () => {
 });
 
 /**
+ * 验证连锁双死场景下，胜负结算事件应在死亡事件之后写入日志。
+ */
+test("game-over should be emitted after chained deaths resolve", () => {
+  const state = createInitialGame(42);
+  const lord = state.players[0];
+  const ganglieOwner = state.players[2];
+
+  for (const participant of state.players) {
+    participant.hand = [];
+  }
+
+  assignSkillToPlayer(state, ganglieOwner.id, STANDARD_SKILL_IDS.xiahoudunGanglie);
+
+  state.currentPlayerId = lord.id;
+  state.phase = "play";
+  lord.hp = 1;
+  ganglieOwner.hp = 1;
+  lord.hand = [{ id: "chain-death-duel-1", kind: "duel", suit: "spade", point: 12 }];
+  state.deck = [{ id: "chain-death-ganglie-judge-1", kind: "slash", suit: "spade", point: 9 }, ...state.deck];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: lord.id,
+    cardId: "chain-death-duel-1",
+    targetId: ganglieOwner.id
+  });
+
+  const deathIndexes = state.events
+    .map((event, index) => ({ event, index }))
+    .filter((item) => item.event.type === "death")
+    .map((item) => item.index);
+  const gameOverIndex = state.events.findIndex((event) => event.type === "game-over");
+
+  assert.equal(deathIndexes.length, 2);
+  assert.ok(gameOverIndex > Math.max(...deathIndexes));
+  assert.equal(state.winner, "rebel-side");
+});
+
+/**
  * 验证华佗【青囊】可弃一张手牌令目标回复1点且每回合限一次。
  */
 test("qingnang skill should heal once per turn by discarding one card", () => {
