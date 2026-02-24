@@ -1,0 +1,22 @@
+{
+  "generals": {
+    "liubei": "generals/liubei.png",
+    "zhouyu": "generals/zhouyu.png",
+    "ganning": "generals/ganning.png",
+    "luxun": "generals/luxun.png",
+    "diaochan": "generals/diaochan.png"
+  },
+  "cards": {
+    "slash": "cards/slash.png",
+    "dodge": "cards/dodge.png",
+    "peach": "cards/peach.png",
+    "snatch": "cards/snatch.png",
+    "dismantle": "cards/dismantle.png",
+    "duel": "cards/duel.png",
+    "nullify": "cards/nullify.png"
+  },
+  "ui": {
+    "table": "ui/table.png"
+  },
+  "audio": {}
+}
