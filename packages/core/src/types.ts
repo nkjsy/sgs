@@ -196,6 +196,18 @@ export interface GameState {
   slashUsedInTurn: number;
   /** 当前回合是否应跳过出牌阶段。 */
   skipPlayPhaseForCurrentTurn: boolean;
+  /** 当前回合【裸衣】增伤生效角色编号。 */
+  luoyiActivePlayerId: string | null;
+  /** 当前回合各角色通过【仁德】给出的手牌数量。 */
+  rendeGivenInTurnByPlayer: Record<string, number>;
+  /** 当前回合各角色是否已通过【仁德】触发回复。 */
+  rendeRecoveredInTurnByPlayer: Record<string, boolean>;
+  /** 当前回合各角色是否已发动过【反间】。 */
+  fanjianUsedInTurnByPlayer: Record<string, boolean>;
+  /** 当前回合各角色是否已发动过【制衡】。 */
+  zhihengUsedInTurnByPlayer: Record<string, boolean>;
+  /** 当前回合各角色是否已发动过【结姻】。 */
+  jieyinUsedInTurnByPlayer: Record<string, boolean>;
   /** 获胜阵营，未结束时为空。 */
   winner: "lord-side" | "rebel-side" | "renegade" | null;
   /** 随机种子。 */

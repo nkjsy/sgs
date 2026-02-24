@@ -2203,6 +2203,227 @@ test("jizhi skill should not trigger on delayed trick", () => {
 });
 
 /**
+ * 验证司马懿【反馈】在受到有来源伤害后可获得伤害来源的一张牌。
+ */
+test("fankui skill should gain one card from damage source", () => {
+  const state = createInitialGame(42);
+  const source = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, target.id, STANDARD_SKILL_IDS.simayiFankui);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.hand = [
+    { id: "slash-fankui-src-1", kind: "slash", suit: "spade", point: 10 },
+    { id: "fankui-src-card-1", kind: "dodge", suit: "heart", point: 4 }
+  ];
+  target.hand = [];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "slash-fankui-src-1",
+    targetId: target.id
+  });
+
+  assert.ok(target.hand.some((card) => card.id === "fankui-src-card-1"));
+  assert.equal(source.hand.some((card) => card.id === "fankui-src-card-1"), false);
+});
+
+/**
+ * 验证司马懿【反馈】不会对无来源伤害（如闪电）触发。
+ */
+test("fankui skill should not trigger on source-less damage", () => {
+  const state = createInitialGame(42);
+  const target = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, target.id, STANDARD_SKILL_IDS.simayiFankui);
+
+  state.currentPlayerId = target.id;
+  state.phase = "judge";
+  target.judgmentZone.delayedTricks = [{ id: "lightning-fankui-1", kind: "lightning", suit: "spade", point: 1 }];
+  state.deck = [{ id: "lightning-hit-fankui-1", kind: "slash", suit: "spade", point: 5 }];
+
+  stepPhase(state);
+
+  assert.equal(target.hand.length, 0);
+});
+
+/**
+ * 验证司马懿【鬼才】可替换判定牌，使【乐不思蜀】判定由失败变成功。
+ */
+test("guicai skill should replace judgment card for indulgence", () => {
+  const state = createInitialGame(42);
+  const judged = state.players[1];
+  const guicaiOwner = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, guicaiOwner.id, STANDARD_SKILL_IDS.simayiGuicai);
+
+  state.currentPlayerId = judged.id;
+  state.phase = "judge";
+  judged.judgmentZone.delayedTricks = [{ id: "indulgence-guicai-1", kind: "indulgence", suit: "spade", point: 3 }];
+  guicaiOwner.hand = [{ id: "guicai-heart-1", kind: "peach", suit: "heart", point: 9 }];
+  state.deck = [{ id: "judge-black-before-guicai-1", kind: "slash", suit: "club", point: 6 }];
+
+  stepPhase(state);
+
+  assert.equal(state.skipPlayPhaseForCurrentTurn, false);
+  assert.equal(guicaiOwner.hand.length, 0);
+  assert.ok(state.discard.some((card) => card.id === "guicai-heart-1"));
+});
+
+/**
+ * 验证司马懿【鬼才】无手牌时无法替换判定。
+ */
+test("guicai skill should not replace judgment without hand cards", () => {
+  const state = createInitialGame(42);
+  const judged = state.players[1];
+  const guicaiOwner = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, guicaiOwner.id, STANDARD_SKILL_IDS.simayiGuicai);
+
+  state.currentPlayerId = judged.id;
+  state.phase = "judge";
+  judged.judgmentZone.delayedTricks = [{ id: "indulgence-guicai-2", kind: "indulgence", suit: "spade", point: 7 }];
+  state.deck = [{ id: "judge-black-no-guicai-1", kind: "slash", suit: "club", point: 2 }];
+
+  stepPhase(state);
+
+  assert.equal(state.skipPlayPhaseForCurrentTurn, true);
+});
+
+/**
+ * 验证郭嘉【天妒】可在判定后获得生效判定牌。
+ */
+test("tiandu skill should gain judgment card", () => {
+  const state = createInitialGame(42);
+  const target = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, target.id, STANDARD_SKILL_IDS.guojiaTiandu);
+
+  state.currentPlayerId = target.id;
+  state.phase = "judge";
+  target.judgmentZone.delayedTricks = [{ id: "lightning-tiandu-1", kind: "lightning", suit: "spade", point: 1 }];
+  state.deck = [{ id: "judge-tiandu-1", kind: "slash", suit: "club", point: 10 }];
+
+  stepPhase(state);
+
+  assert.ok(target.hand.some((card) => card.id === "judge-tiandu-1"));
+  assert.equal(state.discard.some((card) => card.id === "judge-tiandu-1"), false);
+});
+
+/**
+ * 验证无【天妒】时判定牌仍进入弃牌堆。
+ */
+test("judgment card should go to discard without tiandu", () => {
+  const state = createInitialGame(42);
+  const target = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = target.id;
+  state.phase = "judge";
+  target.judgmentZone.delayedTricks = [{ id: "lightning-no-tiandu-1", kind: "lightning", suit: "spade", point: 1 }];
+  state.deck = [{ id: "judge-no-tiandu-1", kind: "slash", suit: "club", point: 11 }];
+
+  stepPhase(state);
+
+  assert.equal(target.hand.some((card) => card.id === "judge-no-tiandu-1"), false);
+  assert.ok(state.discard.some((card) => card.id === "judge-no-tiandu-1"));
+});
+
+/**
+ * 验证夏侯惇【刚烈】非红桃判定时可令伤害来源弃两张手牌。
+ */
+test("ganglie skill should force source to discard two cards on non-heart judgment", () => {
+  const state = createInitialGame(42);
+  const source = state.players[0];
+  const owner = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, owner.id, STANDARD_SKILL_IDS.xiahoudunGanglie);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.hand = [
+    { id: "slash-ganglie-1", kind: "slash", suit: "spade", point: 8 },
+    { id: "src-discard-ganglie-1", kind: "dodge", suit: "club", point: 6 },
+    { id: "src-discard-ganglie-2", kind: "peach", suit: "diamond", point: 12 }
+  ];
+  state.deck = [{ id: "ganglie-judge-black-1", kind: "slash", suit: "club", point: 4 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "slash-ganglie-1",
+    targetId: owner.id
+  });
+
+  assert.equal(source.hand.length, 0);
+  assert.ok(state.discard.some((card) => card.id === "src-discard-ganglie-1"));
+  assert.ok(state.discard.some((card) => card.id === "src-discard-ganglie-2"));
+});
+
+/**
+ * 验证夏侯惇【刚烈】非红桃判定且来源手牌不足两张时，对来源造成1点伤害。
+ */
+test("ganglie skill should deal damage when source has less than two cards", () => {
+  const state = createInitialGame(42);
+  const source = state.players[0];
+  const owner = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, owner.id, STANDARD_SKILL_IDS.xiahoudunGanglie);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.hand = [
+    { id: "slash-ganglie-2", kind: "slash", suit: "spade", point: 9 },
+    { id: "src-only-one-card-1", kind: "dodge", suit: "heart", point: 2 }
+  ];
+  state.deck = [{ id: "ganglie-judge-black-2", kind: "slash", suit: "club", point: 7 }];
+
+  const hpBefore = source.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "slash-ganglie-2",
+    targetId: owner.id
+  });
+
+  assert.equal(source.hp, hpBefore - 1);
+});
+
+/**
  * 验证八卦阵判定为红色时可视为打出【闪】抵消【杀】。
  */
 test("eight diagram should auto-dodge slash on red judgment", () => {
@@ -2772,4 +2993,1066 @@ test("renwang shield should apply per target in halberd multi-target slash", () 
   assert.equal(primary.hp, hpPrimaryBefore);
   assert.equal(extraA.hp, hpExtraABefore);
   assert.equal(extraB.hp, hpExtraBBefore - 1);
+});
+
+/**
+ * 验证许褚【裸衣】会少摸一张牌，且本回合【杀】伤害+1。
+ */
+test("luoyi skill should reduce draw and increase slash damage", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.xuchuLuoyi);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "draw";
+  state.deck = [
+    { id: "luoyi-draw-1", kind: "dodge", suit: "heart", point: 2 },
+    { id: "luoyi-draw-2", kind: "slash", suit: "spade", point: 9 }
+  ];
+
+  stepPhase(state);
+  assert.equal(actor.hand.length, 1);
+
+  actor.hand = [{ id: "luoyi-slash-1", kind: "slash", suit: "club", point: 7 }];
+  target.hand = [];
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "luoyi-slash-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, hpBefore - 2);
+});
+
+/**
+ * 验证许褚【裸衣】在本回合会使【决斗】造成伤害+1。
+ */
+test("luoyi skill should increase duel damage", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.xuchuLuoyi);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  state.luoyiActivePlayerId = actor.id;
+  actor.hand = [{ id: "duel-luoyi-1", kind: "duel", suit: "spade", point: 1 }];
+  target.hand = [];
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "duel-luoyi-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, hpBefore - 2);
+});
+
+/**
+ * 验证张辽【突袭】可在摸牌阶段获得至多两名角色各一张手牌并少摸对应张数。
+ */
+test("tuxi skill should steal up to two cards and reduce draw", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[1];
+  const targetA = state.players[0];
+  const targetB = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.zhangliaoTuxi);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "draw";
+  targetA.hand = [{ id: "tuxi-target-a-1", kind: "dodge", suit: "heart", point: 4 }];
+  targetB.hand = [{ id: "tuxi-target-b-1", kind: "slash", suit: "spade", point: 8 }];
+  state.deck = [
+    { id: "tuxi-deck-1", kind: "peach", suit: "diamond", point: 6 },
+    { id: "tuxi-deck-2", kind: "nullify", suit: "club", point: 10 }
+  ];
+
+  stepPhase(state);
+
+  assert.ok(actor.hand.some((card) => card.id === "tuxi-target-a-1"));
+  assert.ok(actor.hand.some((card) => card.id === "tuxi-target-b-1"));
+  assert.equal(actor.hand.some((card) => card.id === "tuxi-deck-1"), false);
+  assert.equal(actor.hand.some((card) => card.id === "tuxi-deck-2"), false);
+});
+
+/**
+ * 验证张辽【突袭】在无可突袭目标时保持正常摸两张。
+ */
+test("tuxi skill should draw normally when no valid target", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.zhangliaoTuxi);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "draw";
+  state.deck = [
+    { id: "tuxi-normal-draw-1", kind: "slash", suit: "spade", point: 6 },
+    { id: "tuxi-normal-draw-2", kind: "dodge", suit: "heart", point: 9 }
+  ];
+
+  stepPhase(state);
+
+  assert.ok(actor.hand.some((card) => card.id === "tuxi-normal-draw-1"));
+  assert.ok(actor.hand.some((card) => card.id === "tuxi-normal-draw-2"));
+});
+
+/**
+ * 验证刘备【仁德】可将手牌交给其他角色，阶段内累计给出2张时回复1点体力。
+ */
+test("rende skill should transfer cards and recover at two given cards", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.liubeiRende);
+
+  actor.hp = 3;
+  actor.maxHp = 4;
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [
+    { id: "rende-give-1", kind: "dodge", suit: "heart", point: 5 },
+    { id: "rende-give-2", kind: "slash", suit: "spade", point: 9 }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_rende__::rende-give-1",
+    targetId: target.id
+  });
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_rende__::rende-give-2",
+    targetId: target.id
+  });
+
+  assert.equal(actor.hp, 4);
+  assert.equal(actor.hand.length, 0);
+  assert.ok(target.hand.some((card) => card.id === "rende-give-1"));
+  assert.ok(target.hand.some((card) => card.id === "rende-give-2"));
+});
+
+/**
+ * 验证刘备【仁德】阶段内回复仅触发一次。
+ */
+test("rende skill should recover only once per turn", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.liubeiRende);
+
+  actor.hp = 2;
+  actor.maxHp = 4;
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [
+    { id: "rende-once-1", kind: "dodge", suit: "heart", point: 1 },
+    { id: "rende-once-2", kind: "slash", suit: "club", point: 2 },
+    { id: "rende-once-3", kind: "peach", suit: "diamond", point: 3 }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_rende__::rende-once-1",
+    targetId: target.id
+  });
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_rende__::rende-once-2",
+    targetId: target.id
+  });
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_rende__::rende-once-3",
+    targetId: target.id
+  });
+
+  assert.equal(actor.hp, 3);
+});
+
+/**
+ * 验证刘备【激将】可在【决斗】响应链中由同阵营角色提供【杀】。
+ */
+test("jijiang skill should request slash from same-camp ally in duel", () => {
+  const state = createInitialGame(42);
+  const source = state.players[2];
+  const target = state.players[0];
+  const ally = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, target.id, STANDARD_SKILL_IDS.liubeiJijiang);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.hand = [{ id: "duel-jijiang-1", kind: "duel", suit: "spade", point: 1 }];
+  ally.hand = [{ id: "ally-slash-jijiang-1", kind: "slash", suit: "club", point: 8 }];
+
+  const sourceHpBefore = source.hp;
+  const targetHpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "duel-jijiang-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, targetHpBefore);
+  assert.equal(source.hp, sourceHpBefore - 1);
+  assert.equal(ally.hand.length, 0);
+});
+
+/**
+ * 验证刘备【激将】无同阵营可供【杀】时无法替代响应。
+ */
+test("jijiang skill should fail when no same-camp slash available", () => {
+  const state = createInitialGame(42);
+  const source = state.players[2];
+  const target = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, target.id, STANDARD_SKILL_IDS.liubeiJijiang);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.hand = [{ id: "duel-jijiang-2", kind: "duel", suit: "spade", point: 2 }];
+
+  const targetHpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "duel-jijiang-2",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, targetHpBefore - 1);
+});
+
+/**
+ * 验证诸葛亮【观星】可调整牌堆顶顺序，使后续摸牌更优。
+ */
+test("guanxing skill should reorder top deck before draw", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.zhugeliangGuanxing);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "judge";
+  state.deck = [
+    { id: "gx-low-1", kind: "horse_plus", suit: "club", point: 2 },
+    { id: "gx-mid-1", kind: "dodge", suit: "heart", point: 6 },
+    { id: "gx-high-1", kind: "nullify", suit: "spade", point: 11 }
+  ];
+
+  stepPhase(state);
+  stepPhase(state);
+
+  assert.ok(actor.hand.some((card) => card.id === "gx-high-1"));
+  assert.ok(actor.hand.some((card) => card.id === "gx-mid-1"));
+  assert.equal(actor.hand.some((card) => card.id === "gx-low-1"), false);
+});
+
+/**
+ * 验证【观星】不会破坏【空城】空手状态（判定阶段后仍可保持空手）。
+ */
+test("guanxing should keep kongcheng empty-hand edge before draw", () => {
+  const state = createInitialGame(42);
+  const kongchengOwner = state.players[0];
+  const attacker = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, kongchengOwner.id, STANDARD_SKILL_IDS.zhugeliangGuanxing);
+  assignSkillToPlayer(state, kongchengOwner.id, STANDARD_SKILL_IDS.zhugeliangKongcheng);
+
+  state.currentPlayerId = kongchengOwner.id;
+  state.phase = "judge";
+  state.deck = [{ id: "gx-edge-1", kind: "slash", suit: "spade", point: 7 }];
+
+  stepPhase(state);
+  assert.equal(kongchengOwner.hand.length, 0);
+
+  state.currentPlayerId = attacker.id;
+  state.phase = "play";
+  attacker.hand = [{ id: "slash-gx-kc-1", kind: "slash", suit: "spade", point: 8 }];
+
+  const slashTargets = getLegalActions(state)
+    .filter((action): action is PlayCardAction => action.type === "play-card" && action.cardId === "slash-gx-kc-1")
+    .map((action) => action.targetId);
+  assert.equal(slashTargets.includes(kongchengOwner.id), false);
+});
+
+/**
+ * 验证周瑜【英姿】可在摸牌阶段额外摸 1 张牌。
+ */
+test("yingzi skill should draw one extra card in draw phase", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.zhouyuYingzi);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "draw";
+  state.deck = [
+    { id: "yingzi-draw-1", kind: "slash", suit: "spade", point: 5 },
+    { id: "yingzi-draw-2", kind: "dodge", suit: "heart", point: 9 },
+    { id: "yingzi-draw-3", kind: "peach", suit: "diamond", point: 12 }
+  ];
+
+  stepPhase(state);
+
+  assert.equal(actor.hand.length, 3);
+  assert.ok(actor.hand.some((card) => card.id === "yingzi-draw-3"));
+});
+
+/**
+ * 验证周瑜【反间】可交牌并在猜错花色时造成 1 点伤害，且每回合限一次。
+ */
+test("fanjian skill should deal damage on suit mismatch and be once per turn", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.zhouyuFanjian);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [
+    { id: "fanjian-card-1", kind: "dodge", suit: "heart", point: 4 },
+    { id: "fanjian-card-2", kind: "slash", suit: "spade", point: 11 }
+  ];
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_fanjian__::fanjian-card-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, hpBefore - 1);
+  assert.ok(target.hand.some((card) => card.id === "fanjian-card-1"));
+
+  const secondFanjianStillLegal = getLegalActions(state).some(
+    (action) => action.type === "play-card" && action.cardId === "__virtual_fanjian__::fanjian-card-2"
+  );
+  assert.equal(secondFanjianStillLegal, false);
+});
+
+/**
+ * 验证黄盖【苦肉】可失去 1 点体力并摸 2 张牌。
+ */
+test("kurou skill should lose 1 hp and draw 2 cards", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.huanggaiKurou);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  state.deck = [
+    { id: "kurou-draw-1", kind: "slash", suit: "spade", point: 8 },
+    { id: "kurou-draw-2", kind: "dodge", suit: "heart", point: 6 }
+  ];
+
+  const hpBefore = actor.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_kurou__"
+  });
+
+  assert.equal(actor.hp, hpBefore - 1);
+  assert.ok(actor.hand.some((card) => card.id === "kurou-draw-1"));
+  assert.ok(actor.hand.some((card) => card.id === "kurou-draw-2"));
+});
+
+/**
+ * 验证黄盖【苦肉】可在同一出牌阶段多次发动。
+ */
+test("kurou skill should be reusable in the same play phase", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.huanggaiKurou);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  state.deck = [
+    { id: "kurou-repeat-1", kind: "slash", suit: "spade", point: 3 },
+    { id: "kurou-repeat-2", kind: "dodge", suit: "heart", point: 5 },
+    { id: "kurou-repeat-3", kind: "peach", suit: "diamond", point: 7 },
+    { id: "kurou-repeat-4", kind: "duel", suit: "club", point: 9 }
+  ];
+
+  const hpBefore = actor.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_kurou__"
+  });
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_kurou__"
+  });
+
+  assert.equal(actor.hp, hpBefore - 2);
+  assert.equal(actor.hand.length, 4);
+});
+
+/**
+ * 验证吕蒙【克己】在本回合未使用【杀】时可跳过弃牌阶段。
+ */
+test("keji skill should skip discard when no slash used", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.lvmengKeji);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "discard";
+  state.slashUsedInTurn = 0;
+  actor.hp = 2;
+  actor.hand = [
+    { id: "keji-keep-1", kind: "slash", suit: "spade", point: 2 },
+    { id: "keji-keep-2", kind: "dodge", suit: "heart", point: 4 },
+    { id: "keji-keep-3", kind: "peach", suit: "diamond", point: 6 }
+  ];
+
+  stepPhase(state);
+
+  assert.equal(actor.hand.length, 3);
+});
+
+/**
+ * 验证吕蒙【克己】在本回合使用过【杀】时不会跳过弃牌阶段。
+ */
+test("keji skill should not skip discard after slash used", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.lvmengKeji);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "discard";
+  state.slashUsedInTurn = 1;
+  actor.hp = 2;
+  actor.hand = [
+    { id: "keji-drop-1", kind: "slash", suit: "spade", point: 2 },
+    { id: "keji-drop-2", kind: "dodge", suit: "heart", point: 4 },
+    { id: "keji-drop-3", kind: "peach", suit: "diamond", point: 6 }
+  ];
+
+  stepPhase(state);
+
+  assert.equal(actor.hand.length, 2);
+});
+
+/**
+ * 验证孙权【制衡】可弃置1张并摸1张，且每回合限一次。
+ */
+test("zhiheng skill should discard one and draw one once per turn", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.sunquanZhiheng);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [
+    { id: "zhiheng-src-1", kind: "dodge", suit: "heart", point: 6 },
+    { id: "zhiheng-src-2", kind: "slash", suit: "spade", point: 9 }
+  ];
+  state.deck = [{ id: "zhiheng-draw-1", kind: "peach", suit: "diamond", point: 3 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_zhiheng__::zhiheng-src-1",
+    targetId: actor.id
+  });
+
+  assert.equal(actor.hand.some((card) => card.id === "zhiheng-src-1"), false);
+  assert.ok(actor.hand.some((card) => card.id === "zhiheng-draw-1"));
+
+  const secondZhihengStillLegal = getLegalActions(state).some(
+    (action) => action.type === "play-card" && action.cardId.startsWith("__virtual_zhiheng__::")
+  );
+  assert.equal(secondZhihengStillLegal, false);
+});
+
+/**
+ * 验证孙权【制衡】在下个回合可再次发动。
+ */
+test("zhiheng skill should reset usage on next turn", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.sunquanZhiheng);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "zhiheng-reset-1", kind: "dodge", suit: "heart", point: 6 }];
+  state.deck = [{ id: "zhiheng-reset-draw-1", kind: "slash", suit: "spade", point: 7 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_zhiheng__::zhiheng-reset-1",
+    targetId: actor.id
+  });
+
+  stepPhase(state);
+  stepPhase(state);
+  stepPhase(state);
+  stepPhase(state);
+  stepPhase(state);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "zhiheng-reset-2", kind: "dodge", suit: "club", point: 10 }];
+
+  const zhihengLegalAgain = getLegalActions(state).some(
+    (action) => action.type === "play-card" && action.cardId === "__virtual_zhiheng__::zhiheng-reset-2"
+  );
+  assert.equal(zhihengLegalAgain, true);
+});
+
+/**
+ * 验证孙尚香【结姻】可弃置两张手牌并与受伤男性目标各回复1点体力。
+ */
+test("jieyin skill should discard two and heal both parties", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[1];
+  const target = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.sunshangxiangJieyin);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hp = 3;
+  actor.maxHp = 4;
+  target.hp = 3;
+  target.maxHp = 5;
+  actor.hand = [
+    { id: "jieyin-cost-1", kind: "dodge", suit: "heart", point: 2 },
+    { id: "jieyin-cost-2", kind: "slash", suit: "spade", point: 11 }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_jieyin__",
+    targetId: target.id
+  });
+
+  assert.equal(actor.hand.length, 0);
+  assert.equal(actor.hp, 4);
+  assert.equal(target.hp, 4);
+});
+
+/**
+ * 验证孙尚香【结姻】每回合限一次。
+ */
+test("jieyin skill should be once per turn", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[1];
+  const target = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.sunshangxiangJieyin);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hp = 3;
+  actor.maxHp = 4;
+  target.hp = 3;
+  target.maxHp = 5;
+  actor.hand = [
+    { id: "jieyin-once-1", kind: "dodge", suit: "heart", point: 2 },
+    { id: "jieyin-once-2", kind: "slash", suit: "spade", point: 11 },
+    { id: "jieyin-once-3", kind: "peach", suit: "diamond", point: 8 },
+    { id: "jieyin-once-4", kind: "duel", suit: "club", point: 4 }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_jieyin__",
+    targetId: target.id
+  });
+
+  const secondJieyinStillLegal = getLegalActions(state).some(
+    (action) => action.type === "play-card" && action.cardId === "__virtual_jieyin__"
+  );
+  assert.equal(secondJieyinStillLegal, false);
+});
+
+/**
+ * 验证大乔【国色】可将方片牌当【乐不思蜀】置入目标判定区。
+ */
+test("guose skill should convert diamond card to indulgence", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[1];
+  const target = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.daqiaoGuose);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "guose-diamond-1", kind: "dodge", suit: "diamond", point: 9 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_guose__::guose-diamond-1",
+    targetId: target.id
+  });
+
+  assert.equal(actor.hand.length, 0);
+  assert.equal(target.judgmentZone.delayedTricks.length, 1);
+  assert.equal(target.judgmentZone.delayedTricks[0].kind, "indulgence");
+});
+
+/**
+ * 验证大乔【国色】不能对已有【乐不思蜀】的目标重复放置。
+ */
+test("guose skill should not target player with existing indulgence", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[1];
+  const target = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.daqiaoGuose);
+  target.judgmentZone.delayedTricks = [{ id: "existing-indulgence-1", kind: "indulgence", suit: "spade", point: 6 }];
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "guose-diamond-2", kind: "dodge", suit: "diamond", point: 3 }];
+
+  const guoseActions = getLegalActions(state).filter(
+    (action) => action.type === "play-card" && action.cardId === "__virtual_guose__::guose-diamond-2"
+  );
+  assert.equal(guoseActions.some((action) => action.type === "play-card" && action.targetId === target.id), false);
+});
+
+/**
+ * 验证大乔【流离】可弃牌并将【杀】转移给攻击范围内其他角色。
+ */
+test("liuli skill should redirect slash to another target in range", () => {
+  const state = createInitialGame(42);
+  const source = state.players[0];
+  const liuliOwner = state.players[1];
+  const redirectedTarget = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, liuliOwner.id, STANDARD_SKILL_IDS.daqiaoLiuli);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.equipment.weapon = { id: "liuli-source-weapon-1", kind: "weapon_blade", suit: "spade", point: 5 };
+  source.hand = [{ id: "liuli-source-slash-1", kind: "slash", suit: "spade", point: 8 }];
+  liuliOwner.hand = [{ id: "liuli-discard-1", kind: "dodge", suit: "heart", point: 2 }];
+
+  const liuliHpBefore = liuliOwner.hp;
+  const redirectedHpBefore = redirectedTarget.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "liuli-source-slash-1",
+    targetId: liuliOwner.id
+  });
+
+  assert.equal(liuliOwner.hp, liuliHpBefore);
+  assert.equal(redirectedTarget.hp, redirectedHpBefore - 1);
+  assert.equal(liuliOwner.hand.length, 0);
+});
+
+/**
+ * 验证大乔【流离】无可转移目标时不生效，仍由自己结算【杀】。
+ */
+test("liuli skill should not redirect when no valid target", () => {
+  const state = createInitialGame(42);
+  const source = state.players[0];
+  const liuliOwner = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+    player.alive = false;
+  }
+
+  source.alive = true;
+  liuliOwner.alive = true;
+
+  assignSkillToPlayer(state, liuliOwner.id, STANDARD_SKILL_IDS.daqiaoLiuli);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.hand = [{ id: "liuli-source-slash-2", kind: "slash", suit: "club", point: 7 }];
+  liuliOwner.hand = [{ id: "liuli-discard-2", kind: "dodge", suit: "heart", point: 4 }];
+
+  const hpBefore = liuliOwner.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "liuli-source-slash-2",
+    targetId: liuliOwner.id
+  });
+
+  assert.equal(liuliOwner.hp, hpBefore);
+  assert.equal(liuliOwner.hand.length, 0);
+});
+
+/**
+ * 验证甘宁【奇袭】可将黑色手牌当【过河拆桥】使用。
+ */
+test("qixi skill should convert black card to dismantle", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[2];
+  const target = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.ganningQixi);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "qixi-black-1", kind: "dodge", suit: "spade", point: 8 }];
+  target.hand = [{ id: "qixi-target-card-1", kind: "slash", suit: "heart", point: 7 }];
+
+  const qixiAction = getLegalActions(state).find(
+    (action) =>
+      action.type === "play-card" &&
+      action.actorId === actor.id &&
+      action.cardId === "__virtual_qixi__::qixi-black-1" &&
+      action.targetId === target.id
+  );
+  assert.ok(qixiAction);
+
+  applyAction(state, qixiAction);
+
+  assert.equal(actor.hand.length, 0);
+  assert.equal(target.hand.length, 0);
+  assert.ok(state.discard.some((card) => card.id === "qixi-black-1"));
+  assert.ok(state.discard.some((card) => card.id === "qixi-target-card-1"));
+});
+
+/**
+ * 验证甘宁【奇袭】可被【无懈可击】抵消。
+ */
+test("qixi skill should be canceled by nullify", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[2];
+  const target = state.players[0];
+  const protector = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.ganningQixi);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "qixi-black-2", kind: "dodge", suit: "club", point: 3 }];
+  target.hand = [{ id: "qixi-target-card-2", kind: "slash", suit: "heart", point: 11 }];
+  protector.hand = [{ id: "qixi-nullify-1", kind: "nullify", suit: "spade", point: 1 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_qixi__::qixi-black-2",
+    targetId: target.id
+  });
+
+  assert.equal(target.hand.length, 1);
+  assert.ok(state.discard.some((card) => card.id === "qixi-nullify-1"));
+});
+
+/**
+ * 验证陆逊【连营】在失去最后手牌后触发摸1。
+ */
+test("lianying skill should draw one after losing last hand card", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[2];
+  const target = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.ganningQixi);
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.luxunLianying);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "lianying-qixi-cost-1", kind: "dodge", suit: "club", point: 6 }];
+  target.hand = [{ id: "lianying-target-card-1", kind: "slash", suit: "diamond", point: 9 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_qixi__::lianying-qixi-cost-1",
+    targetId: target.id
+  });
+
+  assert.equal(actor.hand.length, 1);
+});
+
+/**
+ * 验证陆逊【连营】仅在失去最后手牌时触发。
+ */
+test("lianying skill should not trigger when hand is not emptied", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[2];
+  const target = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.ganningQixi);
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.luxunLianying);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [
+    { id: "lianying-qixi-cost-2", kind: "dodge", suit: "spade", point: 10 },
+    { id: "lianying-keep-1", kind: "peach", suit: "heart", point: 2 }
+  ];
+  target.hand = [{ id: "lianying-target-card-2", kind: "slash", suit: "diamond", point: 12 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_qixi__::lianying-qixi-cost-2",
+    targetId: target.id
+  });
+
+  assert.equal(actor.hand.length, 1);
+  assert.equal(actor.hand[0]?.id, "lianying-keep-1");
+});
+
+/**
+ * 验证陆逊【谦逊】使其不能成为【顺手牵羊】目标。
+ */
+test("qianxun skill should prevent snatch targeting", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const qianxunOwner = state.players[1];
+  const normalTarget = state.players[4];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, qianxunOwner.id, STANDARD_SKILL_IDS.luxunQianxun);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "qianxun-snatch-1", kind: "snatch", suit: "spade", point: 6 }];
+  qianxunOwner.hand = [{ id: "qianxun-owner-hand-1", kind: "dodge", suit: "heart", point: 7 }];
+  normalTarget.hand = [{ id: "qianxun-normal-hand-1", kind: "slash", suit: "club", point: 9 }];
+
+  const snatchActions = getLegalActions(state).filter(
+    (action) => action.type === "play-card" && action.cardId === "qianxun-snatch-1"
+  );
+
+  assert.equal(snatchActions.some((action) => action.type === "play-card" && action.targetId === qianxunOwner.id), false);
+  assert.equal(snatchActions.some((action) => action.type === "play-card" && action.targetId === normalTarget.id), true);
+});
+
+/**
+ * 验证陆逊【谦逊】使其不能成为【乐不思蜀】目标（含普通与国色转化目标判定）。
+ */
+test("qianxun skill should prevent indulgence targeting", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const qianxunOwner = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, qianxunOwner.id, STANDARD_SKILL_IDS.luxunQianxun);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [
+    { id: "qianxun-indulgence-1", kind: "indulgence", suit: "spade", point: 8 },
+    { id: "qianxun-guose-src-1", kind: "dodge", suit: "diamond", point: 2 }
+  ];
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.daqiaoGuose);
+
+  const indulgenceActions = getLegalActions(state).filter(
+    (action) => action.type === "play-card" && action.cardId === "qianxun-indulgence-1"
+  );
+  const guoseActions = getLegalActions(state).filter(
+    (action) => action.type === "play-card" && action.cardId === "__virtual_guose__::qianxun-guose-src-1"
+  );
+
+  assert.equal(indulgenceActions.some((action) => action.type === "play-card" && action.targetId === qianxunOwner.id), false);
+  assert.equal(guoseActions.some((action) => action.type === "play-card" && action.targetId === qianxunOwner.id), false);
+});
+
+/**
+ * 验证对【谦逊】目标强行提交【顺手牵羊】动作会被结算层拒绝并退回手牌。
+ */
+test("qianxun skill should reject forced snatch action on resolution", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const qianxunOwner = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, qianxunOwner.id, STANDARD_SKILL_IDS.luxunQianxun);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "qianxun-snatch-2", kind: "snatch", suit: "spade", point: 4 }];
+  qianxunOwner.hand = [{ id: "qianxun-owner-hand-2", kind: "slash", suit: "heart", point: 10 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "qianxun-snatch-2",
+    targetId: qianxunOwner.id
+  });
+
+  assert.equal(actor.hand.some((card) => card.id === "qianxun-snatch-2"), true);
+  assert.equal(qianxunOwner.hand.some((card) => card.id === "qianxun-owner-hand-2"), true);
+});
+
+/**
+ * 验证貂蝉【闭月】在结束阶段触发摸 1 张牌。
+ */
+test("biyue skill should draw one card at end phase", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.diaochanBiyue);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "end";
+  state.deck = [
+    { id: "biyue-draw-1", kind: "dodge", suit: "heart", point: 6 },
+    { id: "biyue-draw-2", kind: "slash", suit: "spade", point: 7 }
+  ];
+
+  stepPhase(state);
+
+  assert.equal(actor.hand.length, 1);
+  assert.equal(actor.hand[0]?.id, "biyue-draw-1");
+  assert.equal(state.currentPlayerId, state.players[1].id);
+  assert.equal(state.phase, "judge");
 });
