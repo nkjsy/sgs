@@ -617,8 +617,10 @@ function applyEndPlayPhase(state: GameState, action: EndPlayPhaseAction): void {
     return;
   }
 
+  const actor = requireAlivePlayer(state, action.actorId);
+
   state.phase = "discard";
-  pushEvent(state, "action", `${action.actorId} 主动结束出牌阶段`);
+  pushEvent(state, "action", `${actor.name} 主动结束出牌阶段`);
 }
 
 function applyPlayCard(state: GameState, action: PlayCardAction): void {

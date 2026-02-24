@@ -1,5 +1,16 @@
-import { AiContext, Identity, PlayCardAction, TurnAction } from "./types";
+import { AiContext, CardKind, Identity, PlayCardAction, TurnAction } from "./types";
 import { getLegalActions } from "./engine";
+
+const VIRTUAL_SPEAR_SLASH_CARD_ID = "__virtual_spear_slash__";
+const VIRTUAL_WUSHENG_SLASH_CARD_ID_PREFIX = "__virtual_wusheng_slash__::";
+const VIRTUAL_LONGDAN_SLASH_CARD_ID_PREFIX = "__virtual_longdan_slash__::";
+const VIRTUAL_RENDE_CARD_ID_PREFIX = "__virtual_rende__::";
+const VIRTUAL_FANJIAN_CARD_ID_PREFIX = "__virtual_fanjian__::";
+const VIRTUAL_KUROU_CARD_ID = "__virtual_kurou__";
+const VIRTUAL_ZHIHENG_CARD_ID_PREFIX = "__virtual_zhiheng__::";
+const VIRTUAL_JIEYIN_CARD_ID = "__virtual_jieyin__";
+const VIRTUAL_GUOSE_CARD_ID_PREFIX = "__virtual_guose__::";
+const VIRTUAL_QIXI_CARD_ID_PREFIX = "__virtual_qixi__::";
 
 /**
  * 为基础 AI 生成本回合动作。
@@ -23,17 +34,15 @@ export function chooseAiAction(context: AiContext): TurnAction {
       return false;
     }
 
-    const card = context.actor.hand.find((item) => item.id === action.cardId);
-    if (!card) {
-      return false;
-    }
+    const cardKind = getActionCardKind(context, action);
 
     if (
-      card.kind !== "snatch" &&
-      card.kind !== "dismantle" &&
-      card.kind !== "duel" &&
-      card.kind !== "collateral" &&
-      card.kind !== "indulgence"
+      cardKind !== "snatch" &&
+      cardKind !== "dismantle" &&
+      cardKind !== "duel" &&
+      cardKind !== "collateral" &&
+      cardKind !== "indulgence" &&
+      cardKind !== "fanjian"
     ) {
       return false;
     }
@@ -50,8 +59,9 @@ export function chooseAiAction(context: AiContext): TurnAction {
     if (!isPlayCardAction(action)) {
       return false;
     }
-    const card = context.actor.hand.find((item) => item.id === action.cardId);
-    if (card?.kind !== "slash") {
+
+    const cardKind = getActionCardKind(context, action);
+    if (cardKind !== "slash") {
       return false;
     }
 
@@ -68,8 +78,7 @@ export function chooseAiAction(context: AiContext): TurnAction {
       return false;
     }
 
-    const card = context.actor.hand.find((item) => item.id === action.cardId);
-    if (card?.kind !== "peach") {
+    if (getActionCardKind(context, action) !== "peach") {
       return false;
     }
 
@@ -94,23 +103,36 @@ export function chooseAiAction(context: AiContext): TurnAction {
       return false;
     }
 
-    const card = context.actor.hand.find((item) => item.id === action.cardId);
-    if (!card) {
-      return false;
-    }
+    const cardKind = getActionCardKind(context, action);
 
-    if (card.kind === "taoyuan") {
+    if (cardKind === "taoyuan") {
       return context.state.players.some(
         (player) => player.alive && isSameCamp(context.actor.identity, player.identity) && player.hp < player.maxHp
       );
     }
 
-    if (card.kind === "harvest") {
+    if (cardKind === "harvest") {
       return true;
     }
 
-    if (card.kind === "ex_nihilo") {
+    if (cardKind === "ex_nihilo") {
       return action.targetId === context.actor.id;
+    }
+
+    if (cardKind === "rende") {
+      return context.actor.hand.length > context.actor.hp;
+    }
+
+    if (cardKind === "zhiheng") {
+      return context.actor.hand.length >= 2;
+    }
+
+    if (cardKind === "jieyin") {
+      return true;
+    }
+
+    if (cardKind === "kurou") {
+      return context.actor.hp > 1;
     }
 
     return false;
@@ -125,12 +147,9 @@ export function chooseAiAction(context: AiContext): TurnAction {
       return false;
     }
 
-    const card = context.actor.hand.find((item) => item.id === action.cardId);
-    if (!card) {
-      return false;
-    }
+    const cardKind = getActionCardKind(context, action);
 
-    if (card.kind === "lightning") {
+    if (cardKind === "lightning") {
       const hpSafe = context.actor.hp >= 3;
       const enemyCount = context.state.players.filter(
         (player) => player.alive && player.id !== context.actor.id && shouldAttackTarget(context.actor.identity, player.identity)
@@ -149,34 +168,31 @@ export function chooseAiAction(context: AiContext): TurnAction {
     if (!isPlayCardAction(action)) {
       return false;
     }
-    const card = context.actor.hand.find((item) => item.id === action.cardId);
-    if (!card) {
-      return false;
-    }
+    const cardKind = getActionCardKind(context, action);
 
     if (
-      card.kind === "weapon_crossbow" ||
-      card.kind === "weapon_double_sword" ||
-      card.kind === "weapon_qinggang_sword" ||
-      card.kind === "weapon_blade" ||
-      card.kind === "weapon_spear" ||
-      card.kind === "weapon_axe" ||
-      card.kind === "weapon_halberd" ||
-      card.kind === "weapon_kylin_bow" ||
-      card.kind === "weapon_ice_sword"
+      cardKind === "weapon_crossbow" ||
+      cardKind === "weapon_double_sword" ||
+      cardKind === "weapon_qinggang_sword" ||
+      cardKind === "weapon_blade" ||
+      cardKind === "weapon_spear" ||
+      cardKind === "weapon_axe" ||
+      cardKind === "weapon_halberd" ||
+      cardKind === "weapon_kylin_bow" ||
+      cardKind === "weapon_ice_sword"
     ) {
       return !context.actor.equipment.weapon;
     }
 
-    if (card.kind === "armor_eight_diagram" || card.kind === "armor_renwang_shield") {
+    if (cardKind === "armor_eight_diagram" || cardKind === "armor_renwang_shield") {
       return !context.actor.equipment.armor;
     }
 
-    if (card.kind === "horse_plus" || card.kind === "horse_jueying" || card.kind === "horse_dilu" || card.kind === "horse_zhuahuangfeidian") {
+    if (cardKind === "horse_plus" || cardKind === "horse_jueying" || cardKind === "horse_dilu" || cardKind === "horse_zhuahuangfeidian") {
       return !context.actor.equipment.horsePlus;
     }
 
-    if (card.kind === "horse_minus" || card.kind === "horse_chitu" || card.kind === "horse_dayuan" || card.kind === "horse_zixing") {
+    if (cardKind === "horse_minus" || cardKind === "horse_chitu" || cardKind === "horse_dayuan" || cardKind === "horse_zixing") {
       return !context.actor.equipment.horseMinus;
     }
 
@@ -192,8 +208,8 @@ export function chooseAiAction(context: AiContext): TurnAction {
       return false;
     }
 
-    const card = context.actor.hand.find((item) => item.id === action.cardId);
-    if (!card || (card.kind !== "barbarian" && card.kind !== "archery")) {
+    const cardKind = getActionCardKind(context, action);
+    if (cardKind !== "barbarian" && cardKind !== "archery") {
       return false;
     }
 
@@ -231,6 +247,48 @@ export function chooseAiAction(context: AiContext): TurnAction {
  */
 function isPlayCardAction(action: TurnAction): action is PlayCardAction {
   return action.type === "play-card";
+}
+
+function getActionCardKind(context: AiContext, action: PlayCardAction): CardKind | "rende" | "fanjian" | "zhiheng" | "jieyin" | "kurou" | null {
+  const { cardId } = action;
+
+  if (cardId === VIRTUAL_SPEAR_SLASH_CARD_ID) {
+    return "slash";
+  }
+
+  if (cardId.startsWith(VIRTUAL_WUSHENG_SLASH_CARD_ID_PREFIX) || cardId.startsWith(VIRTUAL_LONGDAN_SLASH_CARD_ID_PREFIX)) {
+    return "slash";
+  }
+
+  if (cardId.startsWith(VIRTUAL_QIXI_CARD_ID_PREFIX)) {
+    return "dismantle";
+  }
+
+  if (cardId.startsWith(VIRTUAL_GUOSE_CARD_ID_PREFIX)) {
+    return "indulgence";
+  }
+
+  if (cardId.startsWith(VIRTUAL_RENDE_CARD_ID_PREFIX)) {
+    return "rende";
+  }
+
+  if (cardId.startsWith(VIRTUAL_FANJIAN_CARD_ID_PREFIX)) {
+    return "fanjian";
+  }
+
+  if (cardId.startsWith(VIRTUAL_ZHIHENG_CARD_ID_PREFIX)) {
+    return "zhiheng";
+  }
+
+  if (cardId === VIRTUAL_JIEYIN_CARD_ID) {
+    return "jieyin";
+  }
+
+  if (cardId === VIRTUAL_KUROU_CARD_ID) {
+    return "kurou";
+  }
+
+  return context.actor.hand.find((item) => item.id === cardId)?.kind ?? null;
 }
 
 /**
