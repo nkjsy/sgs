@@ -10,7 +10,9 @@
   "scripts": {
     "build": "npm run -w @sgs/core build && npm run -w @sgs/single build && npm run -w @sgs/web build",
     "test": "npm run -w @sgs/core test && npm run -w @sgs/single test && npm run -w @sgs/web test",
-    "start:single": "npm run -w @sgs/single start"
+    "start:single": "npm run -w @sgs/single start",
+    "skill:status": "npm run -w @sgs/core skill:status",
+    "general:status": "npm run -w @sgs/core general:status"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

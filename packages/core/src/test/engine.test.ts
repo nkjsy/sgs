@@ -4056,3 +4056,397 @@ test("biyue skill should draw one card at end phase", () => {
   assert.equal(state.currentPlayerId, state.players[1].id);
   assert.equal(state.phase, "judge");
 });
+
+/**
+ * 验证貂蝉【离间】可弃置一张牌并令两名男性角色按指定方向决斗。
+ */
+test("lijian skill should force duel between two male targets", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[1];
+  const firstTarget = state.players[2];
+  const secondTarget = state.players[4];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.diaochanLijian);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "lijian-cost-1", kind: "dodge", suit: "heart", point: 8 }];
+  firstTarget.hand = [];
+  secondTarget.hand = [];
+
+  const secondHpBefore = secondTarget.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_lijian__::lijian-cost-1",
+    targetId: firstTarget.id,
+    secondaryTargetId: secondTarget.id
+  });
+
+  assert.equal(actor.hand.length, 0);
+  assert.equal(secondTarget.hp, secondHpBefore - 1);
+});
+
+/**
+ * 验证貂蝉【离间】每回合限一次。
+ */
+test("lijian skill should be once per turn", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[1];
+  const firstTarget = state.players[2];
+  const secondTarget = state.players[4];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.diaochanLijian);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [
+    { id: "lijian-cost-2", kind: "dodge", suit: "heart", point: 8 },
+    { id: "lijian-cost-3", kind: "slash", suit: "spade", point: 5 }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_lijian__::lijian-cost-2",
+    targetId: firstTarget.id,
+    secondaryTargetId: secondTarget.id
+  });
+
+  const secondLijianStillLegal = getLegalActions(state).some(
+    (action) => action.type === "play-card" && action.cardId === "__virtual_lijian__::lijian-cost-3"
+  );
+  assert.equal(secondLijianStillLegal, false);
+});
+
+/**
+ * 验证孙尚香【枭姬】在失去装备（替换武器）后摸两张牌。
+ */
+test("xiaoji skill should draw two after losing an equipment card", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.sunshangxiangXiaoji);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.equipment.weapon = { id: "xiaoji-old-weapon", kind: "weapon_blade", suit: "spade", point: 7 };
+  actor.hand = [{ id: "xiaoji-new-weapon", kind: "weapon_crossbow", suit: "diamond", point: 1 }];
+  state.deck = [
+    { id: "xiaoji-draw-1", kind: "dodge", suit: "heart", point: 3 },
+    { id: "xiaoji-draw-2", kind: "slash", suit: "club", point: 9 },
+    ...state.deck
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "xiaoji-new-weapon",
+    targetId: actor.id
+  });
+
+  assert.equal(actor.equipment.weapon?.id, "xiaoji-new-weapon");
+  assert.equal(actor.hand.some((card) => card.id === "xiaoji-draw-1"), true);
+  assert.equal(actor.hand.some((card) => card.id === "xiaoji-draw-2"), true);
+  assert.ok(state.discard.some((card) => card.id === "xiaoji-old-weapon"));
+});
+
+/**
+ * 验证孙尚香【枭姬】在装备被借刀转移后也会触发摸两张牌。
+ */
+test("xiaoji skill should trigger when weapon is transferred by collateral", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const holder = state.players[1];
+  const slashTarget = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, holder.id, STANDARD_SKILL_IDS.sunshangxiangXiaoji);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "xiaoji-collateral-1", kind: "collateral", suit: "spade", point: 12 }];
+  holder.equipment.weapon = { id: "xiaoji-holder-weapon", kind: "weapon_blade", suit: "club", point: 4 };
+  holder.hand = [];
+  slashTarget.hand = [];
+  state.deck = [
+    { id: "xiaoji-collateral-draw-1", kind: "dodge", suit: "diamond", point: 6 },
+    { id: "xiaoji-collateral-draw-2", kind: "slash", suit: "spade", point: 8 },
+    ...state.deck
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "xiaoji-collateral-1",
+    targetId: holder.id,
+    secondaryTargetId: slashTarget.id
+  });
+
+  assert.equal(holder.equipment.weapon, null);
+  assert.equal(holder.hand.some((card) => card.id === "xiaoji-collateral-draw-1"), true);
+  assert.equal(holder.hand.some((card) => card.id === "xiaoji-collateral-draw-2"), true);
+  assert.equal(actor.hand.some((card) => card.id === "xiaoji-holder-weapon"), true);
+});
+
+/**
+ * 验证曹操【奸雄】在受到有来源伤害后可获得来源一张牌。
+ */
+test("jianxiong skill should gain one card from damage source", () => {
+  const state = createInitialGame(42);
+  const source = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, target.id, STANDARD_SKILL_IDS.caocaoJianxiong);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.hand = [
+    { id: "jianxiong-source-slash-1", kind: "slash", suit: "spade", point: 7 },
+    { id: "jianxiong-source-extra-1", kind: "dodge", suit: "club", point: 5 }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "jianxiong-source-slash-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hand.length, 1);
+  assert.equal(target.hand[0]?.id, "jianxiong-source-extra-1");
+});
+
+/**
+ * 验证曹操【护驾】可由同阵营角色提供【闪】响应【杀】。
+ */
+test("hujia skill should request dodge from same-camp ally", () => {
+  const state = createInitialGame(42);
+  const source = state.players[2];
+  const lord = state.players[0];
+  const ally = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, lord.id, STANDARD_SKILL_IDS.caocaoHujia);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.hand = [{ id: "hujia-slash-1", kind: "slash", suit: "spade", point: 9 }];
+  ally.hand = [{ id: "hujia-dodge-ally-1", kind: "dodge", suit: "heart", point: 3 }];
+
+  const lordHpBefore = lord.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "hujia-slash-1",
+    targetId: lord.id
+  });
+
+  assert.equal(lord.hp, lordHpBefore);
+  assert.ok(state.discard.some((card) => card.id === "hujia-dodge-ally-1"));
+});
+
+/**
+ * 验证甄姬【倾国】可将黑色手牌当【闪】打出。
+ */
+test("qingguo skill should convert black card to dodge", () => {
+  const state = createInitialGame(42);
+  const source = state.players[2];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, target.id, STANDARD_SKILL_IDS.zhenjiQingguo);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.hand = [{ id: "qingguo-slash-1", kind: "slash", suit: "heart", point: 10 }];
+  target.hand = [{ id: "qingguo-black-1", kind: "duel", suit: "club", point: 6 }];
+
+  const targetHpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "qingguo-slash-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, targetHpBefore);
+  assert.ok(state.events.some((event) => event.type === "skill" && event.message.includes("倾国")));
+});
+
+/**
+ * 验证甄姬【洛神】在判定阶段可黑判得牌并在红判时停止。
+ */
+test("luoshen skill should repeatedly judge and gain black cards", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.zhenjiLuoshen);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "judge";
+  state.deck = [
+    { id: "luoshen-black-1", kind: "slash", suit: "spade", point: 8 },
+    { id: "luoshen-red-stop-1", kind: "dodge", suit: "heart", point: 4 },
+    ...state.deck
+  ];
+
+  stepPhase(state);
+
+  assert.equal(actor.hand.some((card) => card.id === "luoshen-black-1"), true);
+  assert.equal(actor.hand.some((card) => card.id === "luoshen-red-stop-1"), false);
+});
+
+/**
+ * 验证黄月英【奇才】可无距离限制使用【顺手牵羊】。
+ */
+test("qicai skill should ignore distance limit for snatch", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const farTarget = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.huangyueyingQicai);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "qicai-snatch-1", kind: "snatch", suit: "spade", point: 5 }];
+  farTarget.hand = [{ id: "qicai-target-card-1", kind: "dodge", suit: "heart", point: 11 }];
+
+  const snatchTargets = getLegalActions(state).filter(
+    (action) => action.type === "play-card" && action.cardId === "qicai-snatch-1"
+  );
+
+  assert.equal(snatchTargets.some((action) => action.type === "play-card" && action.targetId === farTarget.id), true);
+});
+
+/**
+ * 验证孙权主公技【救援】在同阵营他人用桃救主公时额外回复1点。
+ */
+test("jiuyuan skill should grant extra heal when ally rescues lord", () => {
+  const state = createInitialGame(42);
+  const source = state.players[2];
+  const lord = state.players[0];
+  const ally = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, lord.id, STANDARD_SKILL_IDS.sunquanJiuyuan);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  lord.hp = 1;
+  source.hand = [{ id: "jiuyuan-slash-1", kind: "slash", suit: "spade", point: 9 }];
+  ally.hand = [{ id: "jiuyuan-peach-1", kind: "peach", suit: "heart", point: 7 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "jiuyuan-slash-1",
+    targetId: lord.id
+  });
+
+  assert.equal(lord.hp, 2);
+});
+
+/**
+ * 验证华佗【青囊】可弃一张手牌令目标回复1点且每回合限一次。
+ */
+test("qingnang skill should heal once per turn by discarding one card", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[1];
+  const target = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.huatuoQingnang);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  target.hp = target.maxHp - 1;
+  actor.hand = [
+    { id: "qingnang-cost-1", kind: "slash", suit: "spade", point: 3 },
+    { id: "qingnang-cost-2", kind: "dodge", suit: "club", point: 12 }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_qingnang__::qingnang-cost-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, target.maxHp);
+  const qingnangAgainLegal = getLegalActions(state).some(
+    (action) => action.type === "play-card" && action.cardId === "__virtual_qingnang__::qingnang-cost-2"
+  );
+  assert.equal(qingnangAgainLegal, false);
+});
+
+/**
+ * 验证华佗【急救】可在回合外将红色手牌当【桃】救援。
+ */
+test("jijiu skill should allow red card as peach outside own turn", () => {
+  const state = createInitialGame(42);
+  const source = state.players[2];
+  const target = state.players[0];
+  const rescuer = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, rescuer.id, STANDARD_SKILL_IDS.huatuoJijiu);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  target.hp = 1;
+  source.hand = [{ id: "jijiu-slash-1", kind: "slash", suit: "spade", point: 10 }];
+  rescuer.hand = [{ id: "jijiu-red-1", kind: "dodge", suit: "heart", point: 5 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "jijiu-slash-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, 1);
+  assert.ok(state.discard.some((card) => card.id === "jijiu-red-1"));
+});

@@ -11,6 +11,8 @@ const VIRTUAL_ZHIHENG_CARD_ID_PREFIX = "__virtual_zhiheng__::";
 const VIRTUAL_JIEYIN_CARD_ID = "__virtual_jieyin__";
 const VIRTUAL_GUOSE_CARD_ID_PREFIX = "__virtual_guose__::";
 const VIRTUAL_QIXI_CARD_ID_PREFIX = "__virtual_qixi__::";
+const VIRTUAL_LIJIAN_CARD_ID_PREFIX = "__virtual_lijian__::";
+const VIRTUAL_QINGNANG_CARD_ID_PREFIX = "__virtual_qingnang__::";
 
 /**
  * 为基础 AI 生成本回合动作。
@@ -42,9 +44,23 @@ export function chooseAiAction(context: AiContext): TurnAction {
       cardKind !== "duel" &&
       cardKind !== "collateral" &&
       cardKind !== "indulgence" &&
-      cardKind !== "fanjian"
+      cardKind !== "fanjian" &&
+      cardKind !== "lijian"
     ) {
       return false;
+    }
+
+    if (cardKind === "lijian") {
+      const sourceTarget = context.state.players.find((player) => player.id === action.targetId);
+      const secondaryTarget = context.state.players.find((player) => player.id === action.secondaryTargetId);
+      if (!sourceTarget || !secondaryTarget) {
+        return false;
+      }
+
+      return (
+        shouldAttackTarget(context.actor.identity, sourceTarget.identity) &&
+        shouldAttackTarget(context.actor.identity, secondaryTarget.identity)
+      );
     }
 
     const target = context.state.players.find((player) => player.id === action.targetId);
@@ -129,6 +145,11 @@ export function chooseAiAction(context: AiContext): TurnAction {
 
     if (cardKind === "jieyin") {
       return true;
+    }
+
+    if (cardKind === "qingnang") {
+      const target = context.state.players.find((player) => player.id === action.targetId);
+      return Boolean(target && isSameCamp(context.actor.identity, target.identity) && target.hp < target.maxHp);
     }
 
     if (cardKind === "kurou") {
@@ -249,7 +270,10 @@ function isPlayCardAction(action: TurnAction): action is PlayCardAction {
   return action.type === "play-card";
 }
 
-function getActionCardKind(context: AiContext, action: PlayCardAction): CardKind | "rende" | "fanjian" | "zhiheng" | "jieyin" | "kurou" | null {
+function getActionCardKind(
+  context: AiContext,
+  action: PlayCardAction
+): CardKind | "rende" | "fanjian" | "zhiheng" | "jieyin" | "kurou" | "lijian" | "qingnang" | null {
   const { cardId } = action;
 
   if (cardId === VIRTUAL_SPEAR_SLASH_CARD_ID) {
@@ -276,6 +300,10 @@ function getActionCardKind(context: AiContext, action: PlayCardAction): CardKind
     return "fanjian";
   }
 
+  if (cardId.startsWith(VIRTUAL_LIJIAN_CARD_ID_PREFIX)) {
+    return "lijian";
+  }
+
   if (cardId.startsWith(VIRTUAL_ZHIHENG_CARD_ID_PREFIX)) {
     return "zhiheng";
   }
@@ -286,6 +314,10 @@ function getActionCardKind(context: AiContext, action: PlayCardAction): CardKind
 
   if (cardId === VIRTUAL_KUROU_CARD_ID) {
     return "kurou";
+  }
+
+  if (cardId.startsWith(VIRTUAL_QINGNANG_CARD_ID_PREFIX)) {
+    return "qingnang";
   }
 
   return context.actor.hand.find((item) => item.id === cardId)?.kind ?? null;

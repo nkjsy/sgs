@@ -45,6 +45,8 @@ const VIRTUAL_ZHIHENG_CARD_ID_PREFIX = "__virtual_zhiheng__::";
 const VIRTUAL_JIEYIN_CARD_ID = "__virtual_jieyin__";
 const VIRTUAL_GUOSE_CARD_ID_PREFIX = "__virtual_guose__::";
 const VIRTUAL_QIXI_CARD_ID_PREFIX = "__virtual_qixi__::";
+const VIRTUAL_LIJIAN_CARD_ID_PREFIX = "__virtual_lijian__::";
+const VIRTUAL_QINGNANG_CARD_ID_PREFIX = "__virtual_qingnang__::";
 
 export interface CreateInitialGameOptions {
   nullifyResponsePolicy?: NullifyResponsePolicy;
@@ -98,6 +100,8 @@ export function createInitialGame(seed: number, options: CreateInitialGameOption
     fanjianUsedInTurnByPlayer: {},
     zhihengUsedInTurnByPlayer: {},
     jieyinUsedInTurnByPlayer: {},
+    lijianUsedInTurnByPlayer: {},
+    qingnangUsedInTurnByPlayer: {},
     winner: null,
     seed,
     nullifyResponsePolicy: options.nullifyResponsePolicy ?? "camp-first",
@@ -125,6 +129,7 @@ export function stepPhase(state: GameState): void {
   const current = requireAlivePlayer(state, state.currentPlayerId);
 
   if (state.phase === "judge") {
+    tryTriggerLuoshen(state, current);
     tryTriggerGuanxing(state, current);
     resolveJudgePhase(state, current.id);
     state.phase = "draw";
@@ -185,6 +190,36 @@ export function getLegalActions(state: GameState): TurnAction[] {
   const actions: TurnAction[] = [];
 
   for (const card of actor.hand) {
+    if (hasSkill(state, actor.id, STANDARD_SKILL_IDS.huatuoQingnang) && !state.qingnangUsedInTurnByPlayer[actor.id]) {
+      for (const target of state.players.filter((candidate) => candidate.alive && candidate.hp < candidate.maxHp)) {
+        actions.push({
+          type: "play-card",
+          actorId: actor.id,
+          cardId: `${VIRTUAL_QINGNANG_CARD_ID_PREFIX}${card.id}`,
+          targetId: target.id
+        });
+      }
+    }
+
+    if (hasSkill(state, actor.id, STANDARD_SKILL_IDS.diaochanLijian) && !state.lijianUsedInTurnByPlayer[actor.id]) {
+      const maleTargets = getAliveOpponents(state, actor.id).filter((candidate) => candidate.gender === "male");
+      for (const firstTarget of maleTargets) {
+        for (const secondTarget of maleTargets) {
+          if (secondTarget.id === firstTarget.id) {
+            continue;
+          }
+
+          actions.push({
+            type: "play-card",
+            actorId: actor.id,
+            cardId: `${VIRTUAL_LIJIAN_CARD_ID_PREFIX}${card.id}`,
+            targetId: firstTarget.id,
+            secondaryTargetId: secondTarget.id
+          });
+        }
+      }
+    }
+
     if (hasSkill(state, actor.id, STANDARD_SKILL_IDS.ganningQixi) && isBlack(card)) {
       for (const target of getAliveOpponents(state, actor.id).filter((candidate) => candidate.hand.length > 0)) {
         actions.push({
@@ -310,7 +345,7 @@ export function getLegalActions(state: GameState): TurnAction[] {
       for (const target of getAliveOpponents(state, actor.id).filter(
         (candidate) =>
           candidate.hand.length > 0 &&
-          getDistance(state, actor.id, candidate.id) <= 1 &&
+          (canIgnoreTrickDistance(state, actor) || getDistance(state, actor.id, candidate.id) <= 1) &&
           canBeTargetedBySnatchOrIndulgence(state, candidate)
       )) {
         actions.push({
@@ -649,6 +684,11 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
     return;
   }
 
+  if (action.cardId.startsWith(VIRTUAL_LIJIAN_CARD_ID_PREFIX)) {
+    applyLijianAction(state, actor, action);
+    return;
+  }
+
   if (action.cardId.startsWith(VIRTUAL_ZHIHENG_CARD_ID_PREFIX)) {
     applyZhihengAction(state, actor, action);
     return;
@@ -661,6 +701,11 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
 
   if (action.cardId === VIRTUAL_JIEYIN_CARD_ID) {
     applyJieyinAction(state, actor, action);
+    return;
+  }
+
+  if (action.cardId.startsWith(VIRTUAL_QINGNANG_CARD_ID_PREFIX)) {
+    applyQingnangAction(state, actor, action);
     return;
   }
 
@@ -776,7 +821,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
       return;
     }
 
-    if (card.kind === "snatch" && getDistance(state, actor.id, target.id) > 1) {
+    if (card.kind === "snatch" && !canIgnoreTrickDistance(state, actor) && getDistance(state, actor.id, target.id) > 1) {
       actor.hand.push(card);
       return;
     }
@@ -866,6 +911,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
       const takenWeapon = weaponHolder.equipment.weapon;
       weaponHolder.equipment.weapon = null;
       actor.hand.push(takenWeapon);
+      tryTriggerXiaojiAfterEquipmentLoss(state, weaponHolder, 1);
       pushEvent(state, "trick", `${weaponHolder.name} 未打出杀，武器被 ${actor.name} 获得`);
     }
 
@@ -1175,6 +1221,7 @@ function discardOneCardForLiuli(state: GameState, target: PlayerState): Card | u
   if (target.equipment.weapon) {
     const card = target.equipment.weapon;
     target.equipment.weapon = null;
+    tryTriggerXiaojiAfterEquipmentLoss(state, target, 1);
     state.discard.push(card);
     return card;
   }
@@ -1182,6 +1229,7 @@ function discardOneCardForLiuli(state: GameState, target: PlayerState): Card | u
   if (target.equipment.armor) {
     const card = target.equipment.armor;
     target.equipment.armor = null;
+    tryTriggerXiaojiAfterEquipmentLoss(state, target, 1);
     state.discard.push(card);
     return card;
   }
@@ -1189,6 +1237,7 @@ function discardOneCardForLiuli(state: GameState, target: PlayerState): Card | u
   if (target.equipment.horsePlus) {
     const card = target.equipment.horsePlus;
     target.equipment.horsePlus = null;
+    tryTriggerXiaojiAfterEquipmentLoss(state, target, 1);
     state.discard.push(card);
     return card;
   }
@@ -1196,6 +1245,7 @@ function discardOneCardForLiuli(state: GameState, target: PlayerState): Card | u
   if (target.equipment.horseMinus) {
     const card = target.equipment.horseMinus;
     target.equipment.horseMinus = null;
+    tryTriggerXiaojiAfterEquipmentLoss(state, target, 1);
     state.discard.push(card);
     return card;
   }
@@ -1269,6 +1319,7 @@ function discardOneCardForIceSword(state: GameState, target: PlayerState): Card 
   if (target.equipment.weapon) {
     const card = target.equipment.weapon;
     target.equipment.weapon = null;
+    tryTriggerXiaojiAfterEquipmentLoss(state, target, 1);
     state.discard.push(card);
     return card;
   }
@@ -1276,6 +1327,7 @@ function discardOneCardForIceSword(state: GameState, target: PlayerState): Card 
   if (target.equipment.armor) {
     const card = target.equipment.armor;
     target.equipment.armor = null;
+    tryTriggerXiaojiAfterEquipmentLoss(state, target, 1);
     state.discard.push(card);
     return card;
   }
@@ -1283,6 +1335,7 @@ function discardOneCardForIceSword(state: GameState, target: PlayerState): Card 
   if (target.equipment.horsePlus) {
     const card = target.equipment.horsePlus;
     target.equipment.horsePlus = null;
+    tryTriggerXiaojiAfterEquipmentLoss(state, target, 1);
     state.discard.push(card);
     return card;
   }
@@ -1290,6 +1343,7 @@ function discardOneCardForIceSword(state: GameState, target: PlayerState): Card 
   if (target.equipment.horseMinus) {
     const card = target.equipment.horseMinus;
     target.equipment.horseMinus = null;
+    tryTriggerXiaojiAfterEquipmentLoss(state, target, 1);
     state.discard.push(card);
     return card;
   }
@@ -1325,6 +1379,7 @@ function tryDiscardHorseByKylinBow(state: GameState, source: PlayerState, target
   if (target.equipment.horsePlus) {
     const removed = target.equipment.horsePlus;
     target.equipment.horsePlus = null;
+    tryTriggerXiaojiAfterEquipmentLoss(state, target, 1);
     state.discard.push(removed);
     pushEvent(state, "equip", `${source.name} 发动麒麟弓，弃置了 ${target.name} 的+1坐骑`);
     return;
@@ -1333,6 +1388,7 @@ function tryDiscardHorseByKylinBow(state: GameState, source: PlayerState, target
   if (target.equipment.horseMinus) {
     const removed = target.equipment.horseMinus;
     target.equipment.horseMinus = null;
+    tryTriggerXiaojiAfterEquipmentLoss(state, target, 1);
     state.discard.push(removed);
     pushEvent(state, "equip", `${source.name} 发动麒麟弓，弃置了 ${target.name} 的-1坐骑`);
   }
@@ -1708,6 +1764,7 @@ function equipCard(state: GameState, actor: PlayerState, card: Card): void {
   if (isWeaponKind(card.kind)) {
     if (actor.equipment.weapon) {
       state.discard.push(actor.equipment.weapon);
+      tryTriggerXiaojiAfterEquipmentLoss(state, actor, 1);
     }
     actor.equipment.weapon = card;
     pushEvent(state, "equip", `${actor.name} 装备了${getEquipmentDisplayName(card.kind)}`);
@@ -1717,6 +1774,7 @@ function equipCard(state: GameState, actor: PlayerState, card: Card): void {
   if (isArmorKind(card.kind)) {
     if (actor.equipment.armor) {
       state.discard.push(actor.equipment.armor);
+      tryTriggerXiaojiAfterEquipmentLoss(state, actor, 1);
     }
     actor.equipment.armor = card;
     pushEvent(state, "equip", `${actor.name} 装备了${getEquipmentDisplayName(card.kind)}`);
@@ -1726,6 +1784,7 @@ function equipCard(state: GameState, actor: PlayerState, card: Card): void {
   if (isHorsePlusKind(card.kind)) {
     if (actor.equipment.horsePlus) {
       state.discard.push(actor.equipment.horsePlus);
+      tryTriggerXiaojiAfterEquipmentLoss(state, actor, 1);
     }
     actor.equipment.horsePlus = card;
     pushEvent(state, "equip", `${actor.name} 装备了${getEquipmentDisplayName(card.kind)}`);
@@ -1735,6 +1794,7 @@ function equipCard(state: GameState, actor: PlayerState, card: Card): void {
   if (isHorseMinusKind(card.kind)) {
     if (actor.equipment.horseMinus) {
       state.discard.push(actor.equipment.horseMinus);
+      tryTriggerXiaojiAfterEquipmentLoss(state, actor, 1);
     }
     actor.equipment.horseMinus = card;
     pushEvent(state, "equip", `${actor.name} 装备了${getEquipmentDisplayName(card.kind)}`);
@@ -1937,6 +1997,7 @@ function dealDamage(state: GameState, sourceId: string, targetId: string, amount
   target.hp -= amount;
   pushEvent(state, "damage", `${source.name} 对 ${target.name} 造成 ${amount} 点伤害`);
   tryTriggerYiji(state, target.id, amount);
+  tryTriggerJianxiong(state, source, target);
   tryTriggerFankui(state, source.id, target.id, amount);
   tryTriggerGanglie(state, source.id, target.id, amount);
 
@@ -1990,6 +2051,20 @@ function tryTriggerYiji(state: GameState, targetId: string, damageAmount: number
     distributeYijiCards(state, target, drawnCards);
     pushEvent(state, "skill", `${target.name} 发动遗计，完成本次受伤后的分配`);
   }
+}
+
+function tryTriggerJianxiong(state: GameState, source: PlayerState, target: PlayerState): void {
+  if (!hasSkill(state, target.id, STANDARD_SKILL_IDS.caocaoJianxiong)) {
+    return;
+  }
+
+  const obtained = takeOneCardForFankui(state, source);
+  if (!obtained) {
+    return;
+  }
+
+  target.hand.push(obtained);
+  pushEvent(state, "skill", `${target.name} 发动奸雄，获得了 ${source.name} 的 ${obtained.id}`);
 }
 
 function distributeYijiCards(state: GameState, owner: PlayerState, cards: Card[]): void {
@@ -2048,7 +2123,7 @@ function tryTriggerFankui(state: GameState, sourceId: string, targetId: string, 
   }
 
   for (let index = 0; index < damageAmount; index += 1) {
-    const taken = takeOneCardForFankui(source);
+    const taken = takeOneCardForFankui(state, source);
     if (!taken) {
       break;
     }
@@ -2058,7 +2133,7 @@ function tryTriggerFankui(state: GameState, sourceId: string, targetId: string, 
   }
 }
 
-function takeOneCardForFankui(source: PlayerState): Card | undefined {
+function takeOneCardForFankui(state: GameState, source: PlayerState): Card | undefined {
   if (source.hand.length > 0) {
     const card = source.hand.shift() as Card;
     return card;
@@ -2067,24 +2142,28 @@ function takeOneCardForFankui(source: PlayerState): Card | undefined {
   if (source.equipment.weapon) {
     const card = source.equipment.weapon;
     source.equipment.weapon = null;
+    tryTriggerXiaojiAfterEquipmentLoss(state, source, 1);
     return card;
   }
 
   if (source.equipment.armor) {
     const card = source.equipment.armor;
     source.equipment.armor = null;
+    tryTriggerXiaojiAfterEquipmentLoss(state, source, 1);
     return card;
   }
 
   if (source.equipment.horsePlus) {
     const card = source.equipment.horsePlus;
     source.equipment.horsePlus = null;
+    tryTriggerXiaojiAfterEquipmentLoss(state, source, 1);
     return card;
   }
 
   if (source.equipment.horseMinus) {
     const card = source.equipment.horseMinus;
     source.equipment.horseMinus = null;
+    tryTriggerXiaojiAfterEquipmentLoss(state, source, 1);
     return card;
   }
 
@@ -2335,6 +2414,69 @@ function applyQixiAction(state: GameState, actor: PlayerState, action: PlayCardA
   tryTriggerLianyingAfterHandLoss(state, actor);
 }
 
+function applyLijianAction(state: GameState, actor: PlayerState, action: PlayCardAction): void {
+  if (!hasSkill(state, actor.id, STANDARD_SKILL_IDS.diaochanLijian)) {
+    return;
+  }
+
+  if (state.lijianUsedInTurnByPlayer[actor.id]) {
+    return;
+  }
+
+  const firstTarget = action.targetId ? getPlayerById(state, action.targetId) : null;
+  const secondTarget = action.secondaryTargetId ? getPlayerById(state, action.secondaryTargetId) : null;
+  if (
+    !firstTarget ||
+    !secondTarget ||
+    !firstTarget.alive ||
+    !secondTarget.alive ||
+    firstTarget.id === secondTarget.id ||
+    firstTarget.id === actor.id ||
+    secondTarget.id === actor.id ||
+    firstTarget.gender !== "male" ||
+    secondTarget.gender !== "male"
+  ) {
+    return;
+  }
+
+  const sourceCardId = action.cardId.slice(VIRTUAL_LIJIAN_CARD_ID_PREFIX.length);
+  const costCard = removeCardFromHand(actor, sourceCardId);
+  if (!costCard) {
+    return;
+  }
+
+  state.discard.push(costCard);
+  state.lijianUsedInTurnByPlayer[actor.id] = true;
+  pushEvent(state, "skill", `${actor.name} 发动离间，弃置 1 张牌并令 ${firstTarget.name} 对 ${secondTarget.name} 使用决斗`);
+  resolveDuel(state, firstTarget.id, secondTarget.id);
+}
+
+function applyQingnangAction(state: GameState, actor: PlayerState, action: PlayCardAction): void {
+  if (!hasSkill(state, actor.id, STANDARD_SKILL_IDS.huatuoQingnang)) {
+    return;
+  }
+
+  if (state.qingnangUsedInTurnByPlayer[actor.id]) {
+    return;
+  }
+
+  const target = action.targetId ? getPlayerById(state, action.targetId) : null;
+  if (!target || !target.alive || target.hp >= target.maxHp) {
+    return;
+  }
+
+  const sourceCardId = action.cardId.slice(VIRTUAL_QINGNANG_CARD_ID_PREFIX.length);
+  const costCard = removeCardFromHand(actor, sourceCardId);
+  if (!costCard) {
+    return;
+  }
+
+  state.discard.push(costCard);
+  state.qingnangUsedInTurnByPlayer[actor.id] = true;
+  target.hp += 1;
+  pushEvent(state, "skill", `${actor.name} 发动青囊，弃置 1 张手牌并令 ${target.name} 回复 1 点体力`);
+}
+
 function tryTriggerLianyingAfterHandLoss(state: GameState, owner: PlayerState): void {
   if (!hasSkill(state, owner.id, STANDARD_SKILL_IDS.luxunLianying)) {
     return;
@@ -2346,6 +2488,24 @@ function tryTriggerLianyingAfterHandLoss(state: GameState, owner: PlayerState): 
 
   drawCards(state, owner.id, 1);
   pushEvent(state, "skill", `${owner.name} 发动连营，失去最后手牌后摸 1 张牌`);
+}
+
+function tryTriggerXiaojiAfterEquipmentLoss(state: GameState, owner: PlayerState, count: number): void {
+  if (!owner.alive) {
+    return;
+  }
+
+  if (!hasSkill(state, owner.id, STANDARD_SKILL_IDS.sunshangxiangXiaoji)) {
+    return;
+  }
+
+  if (count <= 0) {
+    return;
+  }
+
+  const drawCount = count * 2;
+  drawCards(state, owner.id, drawCount);
+  pushEvent(state, "skill", `${owner.name} 发动枭姬，失去装备后摸 ${drawCount} 张牌`);
 }
 
 function loseHp(state: GameState, targetId: string, amount: number, reason: string): void {
@@ -2495,16 +2655,47 @@ function tryRescueWithPeach(state: GameState, targetId: string): boolean {
       continue;
     }
 
-    const peach = consumeFirstCardByKind(candidate, "peach");
+    const peach = consumePeachLikeForRescue(state, candidate);
     if (peach) {
       state.discard.push(peach);
       target.hp = 1;
+      if (shouldTriggerJiuyuan(state, candidate, target)) {
+        target.hp = Math.min(target.maxHp, target.hp + 1);
+        pushEvent(state, "skill", `${target.name} 发动救援，额外回复 1 点体力`);
+      }
       pushEvent(state, "rescue", `${candidate.name} 使用桃救回 ${target.name}`);
       return true;
     }
   }
 
   return false;
+}
+
+function consumePeachLikeForRescue(state: GameState, player: PlayerState): Card | undefined {
+  const peach = consumeFirstCardByKind(player, "peach");
+  if (peach) {
+    return peach;
+  }
+
+  if (!hasSkill(state, player.id, STANDARD_SKILL_IDS.huatuoJijiu)) {
+    return undefined;
+  }
+
+  if (player.id === state.currentPlayerId) {
+    return undefined;
+  }
+
+  const redIndex = player.hand.findIndex((card) => isRed(card));
+  if (redIndex < 0) {
+    return undefined;
+  }
+
+  const [converted] = player.hand.splice(redIndex, 1);
+  pushEvent(state, "skill", `${player.name} 在回合外发动急救，将红色手牌当桃使用`);
+  return {
+    ...converted,
+    kind: "peach"
+  };
 }
 
 /**
@@ -2544,6 +2735,26 @@ function shouldUsePeachToRescue(rescuer: PlayerState, target: PlayerState): bool
   }
 
   return isSameCamp(rescuer.identity, target.identity);
+}
+
+function shouldTriggerJiuyuan(state: GameState, rescuer: PlayerState, target: PlayerState): boolean {
+  if (!hasSkill(state, target.id, STANDARD_SKILL_IDS.sunquanJiuyuan)) {
+    return false;
+  }
+
+  if (target.identity !== "lord") {
+    return false;
+  }
+
+  if (rescuer.id === target.id) {
+    return false;
+  }
+
+  return isSameCamp(rescuer.identity, target.identity);
+}
+
+function canIgnoreTrickDistance(state: GameState, actor: PlayerState): boolean {
+  return hasSkill(state, actor.id, STANDARD_SKILL_IDS.huangyueyingQicai);
 }
 
 /**
@@ -2599,6 +2810,8 @@ function advanceTurn(state: GameState): void {
   state.fanjianUsedInTurnByPlayer = {};
   state.zhihengUsedInTurnByPlayer = {};
   state.jieyinUsedInTurnByPlayer = {};
+  state.lijianUsedInTurnByPlayer = {};
+  state.qingnangUsedInTurnByPlayer = {};
   state.turnCount += 1;
   pushEvent(state, "turn", `轮到 ${next.name} 的回合`);
   pushEvent(state, "phase", `${next.name} 进入判定阶段`);
@@ -2627,6 +2840,31 @@ function canBeTargetedBySnatchOrIndulgence(state: GameState, target: PlayerState
   }
 
   return true;
+}
+
+function tryTriggerLuoshen(state: GameState, owner: PlayerState): void {
+  if (!hasSkill(state, owner.id, STANDARD_SKILL_IDS.zhenjiLuoshen)) {
+    return;
+  }
+
+  while (true) {
+    const judgeCard = drawJudgmentCard(state, owner);
+    if (!judgeCard) {
+      return;
+    }
+
+    if (!isBlack(judgeCard)) {
+      pushEvent(state, "skill", `${owner.name} 发动洛神，判定为红色，结束连判`);
+      return;
+    }
+
+    const discardIndex = state.discard.findIndex((card) => card.id === judgeCard.id);
+    if (discardIndex >= 0) {
+      const [obtained] = state.discard.splice(discardIndex, 1);
+      owner.hand.push(obtained);
+    }
+    pushEvent(state, "skill", `${owner.name} 发动洛神，判定为黑色，获得 ${judgeCard.id}`);
+  }
 }
 
 function tryTriggerBiyue(state: GameState, owner: PlayerState): void {
@@ -2775,6 +3013,31 @@ function consumeDodgeLikeCard(state: GameState, player: PlayerState, contextName
   const dodge = consumeFirstCardByKind(player, "dodge");
   if (dodge) {
     return dodge;
+  }
+
+  if (hasSkill(state, player.id, STANDARD_SKILL_IDS.zhenjiQingguo)) {
+    const blackIndex = player.hand.findIndex((card) => isBlack(card));
+    if (blackIndex >= 0) {
+      const [converted] = player.hand.splice(blackIndex, 1);
+      pushEvent(state, "skill", `${player.name} 在${contextName}中发动倾国，将黑色手牌当闪打出`);
+      return {
+        ...converted,
+        kind: "dodge"
+      };
+    }
+  }
+
+  if (hasSkill(state, player.id, STANDARD_SKILL_IDS.caocaoHujia) && player.identity === "lord") {
+    const responders = getJijiangResponders(state, player);
+    for (const responder of responders) {
+      const provided = consumeDodgeLikeCard(state, responder, "护驾");
+      if (!provided) {
+        continue;
+      }
+
+      pushEvent(state, "skill", `${player.name} 发动护驾，由 ${responder.name} 提供了一张闪`);
+      return provided;
+    }
   }
 
   if (!hasSkill(state, player.id, STANDARD_SKILL_IDS.zhaoyunLongdan)) {

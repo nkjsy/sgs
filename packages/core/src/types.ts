@@ -208,6 +208,10 @@ export interface GameState {
   zhihengUsedInTurnByPlayer: Record<string, boolean>;
   /** 当前回合各角色是否已发动过【结姻】。 */
   jieyinUsedInTurnByPlayer: Record<string, boolean>;
+  /** 当前回合各角色是否已发动过【离间】。 */
+  lijianUsedInTurnByPlayer: Record<string, boolean>;
+  /** 当前回合各角色是否已发动过【青囊】。 */
+  qingnangUsedInTurnByPlayer: Record<string, boolean>;
   /** 获胜阵营，未结束时为空。 */
   winner: "lord-side" | "rebel-side" | "renegade" | null;
   /** 随机种子。 */

@@ -5,6 +5,8 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node --test dist/test/**/*.test.js"
+    "test": "node --test dist/test/**/*.test.js",
+    "skill:status": "npm run build && node dist/skill-status.js",
+    "general:status": "npm run build && node dist/general-status.js"
   }
 }

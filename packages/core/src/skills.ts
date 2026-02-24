@@ -1,6 +1,8 @@
 import { GameEvent, GameState, SkillDefinition, SkillSystemState } from "./types";
 
 export const STANDARD_SKILL_IDS = {
+  caocaoJianxiong: "std.caocao.jianxiong",
+  caocaoHujia: "std.caocao.hujia",
   zhangfeiPaoxiao: "std.zhangfei.paoxiao",
   machaoMashu: "std.machao.mashu",
   machaoTieqi: "std.machao.tieqi",
@@ -25,12 +27,20 @@ export const STANDARD_SKILL_IDS = {
   luxunLianying: "std.luxun.lianying",
   luxunQianxun: "std.luxun.qianxun",
   diaochanBiyue: "std.diaochan.biyue",
+  diaochanLijian: "std.diaochan.lijian",
+  sunshangxiangXiaoji: "std.sunshangxiang.xiaoji",
   guanyuWusheng: "std.guanyu.wusheng",
   guojiaYiji: "std.guojia.yiji",
   zhugeliangKongcheng: "std.zhugeliang.kongcheng",
   lvbuWushuang: "std.lvbu.wushuang",
   zhaoyunLongdan: "std.zhaoyun.longdan",
-  huangyueyingJizhi: "std.huangyueying.jizhi"
+  huangyueyingJizhi: "std.huangyueying.jizhi",
+  huangyueyingQicai: "std.huangyueying.qicai",
+  zhenjiQingguo: "std.zhenji.qingguo",
+  zhenjiLuoshen: "std.zhenji.luoshen",
+  sunquanJiuyuan: "std.sunquan.jiuyuan",
+  huatuoQingnang: "std.huatuo.qingnang",
+  huatuoJijiu: "std.huatuo.jijiu"
 } as const;
 
 export function createSkillSystemState(): SkillSystemState {
