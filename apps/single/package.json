@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
+    "stats": "npm run -w @sgs/core build && npm run build && node dist/batch-stats.js",
     "test": "node --test"
   },
   "dependencies": {

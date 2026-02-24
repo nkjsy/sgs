@@ -1,4 +1,4 @@
-import { STANDARD_SKILL_IDS, applyAction, assignSkillToPlayer, chooseAiAction, createInitialGame, stepPhase } from "@sgs/core";
+import { runSingleSimulation } from "./simulation";
 
 const EVENT_STYLE: Record<string, { tag: string; group: string }> = {
   "game-start": { tag: "START", group: "系统" },
@@ -21,74 +21,17 @@ const EVENT_STYLE: Record<string, { tag: string; group: string }> = {
   skill: { tag: "SKILL", group: "技能" }
 };
 
-/**
- * 启动单机模拟局。
- *
- * 当前版本会将所有玩家按 AI 逻辑运行，主要用于验证规则主循环。
- */
-function runSingleSimulation(): void {
-  const state = createInitialGame(20260222);
-  setupSingleDemoRoster(state);
-  /**
-   * 单次模拟允许的最大推进步数。
-   *
-   * 该上限用于防止规则或 AI 导致死循环；当达到上限时会输出诊断信息。
-   */
+function runSingleAndPrint(): void {
   const maxTicks = 1200;
-  let ticks = 0;
+  const result = runSingleSimulation(20260222, { maxTicks, rosterMode: "fixed-demo" });
 
-  while (!state.winner && ticks < maxTicks) {
-    if (state.phase === "play") {
-      const actor = state.players.find((player) => player.id === state.currentPlayerId);
-      if (!actor || !actor.alive) {
-        stepPhase(state);
-        ticks += 1;
-        continue;
-      }
+  printLayeredEvents(result.state.events);
 
-      const action = chooseAiAction({ state, actor });
-      applyAction(state, action);
-
-      if (action.type === "end-play-phase") {
-        stepPhase(state);
-      }
-      ticks += 1;
-      continue;
-    }
-
-    stepPhase(state);
-    ticks += 1;
-  }
-
-  printLayeredEvents(state.events);
-
-  if (!state.winner && ticks >= maxTicks) {
+  if (result.timeout) {
     console.log(`模拟在 ${maxTicks} 步后终止（未决出胜负），建议提升 AI 进攻性或扩充牌池。`);
   }
 
-  console.log(`对局结束，胜利方: ${state.winner ?? "未决出"}`);
-}
-
-function setupSingleDemoRoster(state: ReturnType<typeof createInitialGame>): void {
-  const [player1, player2, player3, player4, player5] = state.players;
-
-  player1.name = "刘备";
-  assignSkillToPlayer(state, player1.id, STANDARD_SKILL_IDS.liubeiRende);
-  assignSkillToPlayer(state, player1.id, STANDARD_SKILL_IDS.liubeiJijiang);
-
-  player2.name = "周瑜";
-  assignSkillToPlayer(state, player2.id, STANDARD_SKILL_IDS.zhouyuYingzi);
-  assignSkillToPlayer(state, player2.id, STANDARD_SKILL_IDS.zhouyuFanjian);
-
-  player3.name = "甘宁";
-  assignSkillToPlayer(state, player3.id, STANDARD_SKILL_IDS.ganningQixi);
-
-  player4.name = "陆逊";
-  assignSkillToPlayer(state, player4.id, STANDARD_SKILL_IDS.luxunQianxun);
-  assignSkillToPlayer(state, player4.id, STANDARD_SKILL_IDS.luxunLianying);
-
-  player5.name = "貂蝉";
-  assignSkillToPlayer(state, player5.id, STANDARD_SKILL_IDS.diaochanBiyue);
+  console.log(`对局结束，胜利方: ${result.winner ?? "未决出"}`);
 }
 
 /**
@@ -117,4 +60,4 @@ function printLayeredEvents(events: Array<{ type: string; message: string }>): v
   }
 }
 
-runSingleSimulation();
+runSingleAndPrint();

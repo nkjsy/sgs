@@ -126,7 +126,11 @@ export function stepPhase(state: GameState): void {
     return;
   }
 
-  const current = requireAlivePlayer(state, state.currentPlayerId);
+  const current = getPlayerById(state, state.currentPlayerId);
+  if (!current || !current.alive) {
+    advanceTurn(state);
+    return;
+  }
 
   if (state.phase === "judge") {
     tryTriggerLuoshen(state, current);
@@ -1087,6 +1091,13 @@ function resolveSlashOnTarget(
   shouldDiscardSlash = true,
   canUseDodge = true
 ): void {
+  if (!source.alive || !target.alive) {
+    if (shouldDiscardSlash) {
+      state.discard.push(slashCard);
+    }
+    return;
+  }
+
   const redirected = tryApplyLiuliRedirection(state, source, target, slashCard, slashLabel, shouldDiscardSlash, canUseDodge);
   if (redirected) {
     return;
@@ -1885,8 +1896,11 @@ function shouldPlayNullify(
     return true;
   }
 
-  const source = requireAlivePlayer(state, sourceId);
-  const target = requireAlivePlayer(state, targetId);
+  const source = getPlayerById(state, sourceId);
+  const target = getPlayerById(state, targetId);
+  if (!source || !target || !source.alive || !target.alive) {
+    return false;
+  }
 
   if (!currentlyNegated) {
     if (trickKind === "barbarian" || trickKind === "archery") {
@@ -1991,8 +2005,11 @@ function getAlivePlayersFrom(state: GameState, startId: string): PlayerState[] {
 }
 
 function dealDamage(state: GameState, sourceId: string, targetId: string, amount: number): void {
-  const source = requireAlivePlayer(state, sourceId);
-  const target = requireAlivePlayer(state, targetId);
+  const source = getPlayerById(state, sourceId);
+  const target = getPlayerById(state, targetId);
+  if (!source || !target || !target.alive) {
+    return;
+  }
 
   target.hp -= amount;
   pushEvent(state, "damage", `${source.name} 对 ${target.name} 造成 ${amount} 点伤害`);
@@ -2021,7 +2038,11 @@ function dealDamage(state: GameState, sourceId: string, targetId: string, amount
  * @param reason 伤害原因。
  */
 function dealDamageWithoutSource(state: GameState, targetId: string, amount: number, reason: string): void {
-  const target = requireAlivePlayer(state, targetId);
+  const target = getPlayerById(state, targetId);
+  if (!target || !target.alive) {
+    return;
+  }
+
   target.hp -= amount;
   pushEvent(state, "damage", `${target.name} 受到 ${reason} 造成的 ${amount} 点无来源伤害`);
   tryTriggerYiji(state, target.id, amount);
@@ -2818,7 +2839,11 @@ function advanceTurn(state: GameState): void {
 }
 
 function getAliveOpponents(state: GameState, actorId: string): PlayerState[] {
-  const actor = requireAlivePlayer(state, actorId);
+  const actor = getPlayerById(state, actorId);
+  if (!actor) {
+    return state.players.filter((candidate) => candidate.alive);
+  }
+
   return state.players.filter((candidate) => candidate.alive && candidate.id !== actor.id);
 }
 
