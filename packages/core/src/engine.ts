@@ -2018,15 +2018,7 @@ function dealDamage(state: GameState, sourceId: string, targetId: string, amount
   tryTriggerFankui(state, source.id, target.id, amount);
   tryTriggerGanglie(state, source.id, target.id, amount);
 
-  if (target.hp <= 0) {
-    const rescued = tryRescueWithPeach(state, target.id);
-    if (!rescued) {
-      target.alive = false;
-      clearDeadPlayerCards(state, target);
-      pushEvent(state, "death", `${target.name} 阵亡`);
-      updateWinner(state);
-    }
-  }
+  resolveDyingAndDeath(state, target);
 }
 
 /**
@@ -2047,15 +2039,7 @@ function dealDamageWithoutSource(state: GameState, targetId: string, amount: num
   pushEvent(state, "damage", `${target.name} 受到 ${reason} 造成的 ${amount} 点无来源伤害`);
   tryTriggerYiji(state, target.id, amount);
 
-  if (target.hp <= 0) {
-    const rescued = tryRescueWithPeach(state, target.id);
-    if (!rescued) {
-      target.alive = false;
-      clearDeadPlayerCards(state, target);
-      pushEvent(state, "death", `${target.name} 阵亡`);
-      updateWinner(state);
-    }
-  }
+  resolveDyingAndDeath(state, target);
 }
 
 function tryTriggerYiji(state: GameState, targetId: string, damageAmount: number): void {
@@ -2534,17 +2518,7 @@ function loseHp(state: GameState, targetId: string, amount: number, reason: stri
   target.hp -= amount;
   pushEvent(state, "damage", `${target.name} 因${reason}失去 ${amount} 点体力`);
 
-  if (target.hp > 0) {
-    return;
-  }
-
-  const rescued = tryRescueWithPeach(state, target.id);
-  if (!rescued) {
-    target.alive = false;
-    clearDeadPlayerCards(state, target);
-    pushEvent(state, "death", `${target.name} 阵亡`);
-    updateWinner(state);
-  }
+  resolveDyingAndDeath(state, target);
 }
 
 function chooseFanjianSuit(target: PlayerState): CardSuit {
@@ -2667,29 +2641,73 @@ function tryRescueWithPeach(state: GameState, targetId: string): boolean {
     return true;
   }
 
-  for (const candidate of state.players) {
-    if (!candidate.alive) {
-      continue;
-    }
+  let rescueRound = 1;
+  while (target.hp <= 0) {
+    let rescuedThisRound = false;
+    const rescueOrder = getRescueCandidatesInOrder(state, target.id);
+    pushEvent(state, "rescue", `${target.name} 发起第 ${rescueRound} 轮求桃（当前体力=${target.hp}）`);
 
-    if (!shouldUsePeachToRescue(candidate, target)) {
-      continue;
-    }
+    for (const candidate of rescueOrder) {
 
-    const peach = consumePeachLikeForRescue(state, candidate);
-    if (peach) {
+      if (!shouldUsePeachToRescue(candidate, target)) {
+        continue;
+      }
+
+      const peach = consumePeachLikeForRescue(state, candidate);
+      if (!peach) {
+        continue;
+      }
+
       state.discard.push(peach);
-      target.hp = 1;
+      target.hp = Math.min(target.maxHp, target.hp + 1);
       if (shouldTriggerJiuyuan(state, candidate, target)) {
         target.hp = Math.min(target.maxHp, target.hp + 1);
         pushEvent(state, "skill", `${target.name} 发动救援，额外回复 1 点体力`);
       }
+
       pushEvent(state, "rescue", `${candidate.name} 使用桃救回 ${target.name}`);
-      return true;
+      rescuedThisRound = true;
+      if (target.hp > 0) {
+        pushEvent(state, "dying", `${target.name} 已脱离濒死（体力=${target.hp}）`);
+        return true;
+      }
     }
+
+    if (!rescuedThisRound) {
+      pushEvent(state, "dying", `${target.name} 求桃失败，未脱离濒死`);
+      return false;
+    }
+
+    rescueRound += 1;
   }
 
-  return false;
+  return true;
+}
+
+function resolveDyingAndDeath(state: GameState, target: PlayerState): void {
+  if (!target.alive || target.hp > 0) {
+    return;
+  }
+
+  pushEvent(state, "dying", `${target.name} 进入濒死状态（体力=${target.hp}）`);
+  const rescued = tryRescueWithPeach(state, target.id);
+  if (rescued) {
+    return;
+  }
+
+  target.alive = false;
+  clearDeadPlayerCards(state, target);
+  pushEvent(state, "death", `${target.name} 阵亡`);
+  updateWinner(state);
+}
+
+function getRescueCandidatesInOrder(state: GameState, targetId: string): PlayerState[] {
+  const current = getPlayerById(state, state.currentPlayerId);
+  if (current && current.alive) {
+    return getAlivePlayersFrom(state, current.id);
+  }
+
+  return getAlivePlayersFrom(state, targetId);
 }
 
 function consumePeachLikeForRescue(state: GameState, player: PlayerState): Card | undefined {

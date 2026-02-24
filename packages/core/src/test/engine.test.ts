@@ -4384,6 +4384,147 @@ test("jiuyuan skill should grant extra heal when ally rescues lord", () => {
 });
 
 /**
+ * 验证濒死角色体力低于0时，需要按每张【桃】逐次回复直至体力大于0。
+ */
+test("dying rescue should require multiple peaches when hp is below zero", () => {
+  const state = createInitialGame(42);
+  const source = state.players[0];
+  const target = state.players[2];
+  const rescuer = state.players[3];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  state.luoyiActivePlayerId = source.id;
+  target.hp = 1;
+  source.hand = [{ id: "deep-dying-duel-1", kind: "duel", suit: "spade", point: 9 }];
+  target.hand = [{ id: "deep-dying-peach-self", kind: "peach", suit: "heart", point: 6 }];
+  rescuer.hand = [{ id: "deep-dying-peach-ally", kind: "peach", suit: "diamond", point: 7 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "deep-dying-duel-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.alive, true);
+  assert.equal(target.hp, 1);
+  assert.ok(state.discard.some((card) => card.id === "deep-dying-peach-self"));
+  assert.ok(state.discard.some((card) => card.id === "deep-dying-peach-ally"));
+});
+
+/**
+ * 验证主公技【救援】在深度濒死时按每张桃生效，单桃可额外回复1点。
+ */
+test("jiuyuan should rescue deep dying lord with one ally peach", () => {
+  const state = createInitialGame(42);
+  const source = state.players[2];
+  const lord = state.players[0];
+  const ally = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, lord.id, STANDARD_SKILL_IDS.sunquanJiuyuan);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  state.luoyiActivePlayerId = source.id;
+  lord.hp = 1;
+  source.hand = [{ id: "deep-jiuyuan-duel-1", kind: "duel", suit: "spade", point: 8 }];
+  ally.hand = [{ id: "deep-jiuyuan-peach-1", kind: "peach", suit: "heart", point: 9 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "deep-jiuyuan-duel-1",
+    targetId: lord.id
+  });
+
+  assert.equal(lord.alive, true);
+  assert.equal(lord.hp, 1);
+  assert.ok(state.discard.some((card) => card.id === "deep-jiuyuan-peach-1"));
+});
+
+/**
+ * 验证濒死求桃询问顺序按“当前回合角色起始座次”，而非固定玩家数组顺序。
+ */
+test("dying rescue should ask peaches from current-player seat order", () => {
+  const state = createInitialGame(42);
+  const source = state.players[3];
+  const target = state.players[4];
+  const player = state.players[0];
+
+  for (const participant of state.players) {
+    participant.hand = [];
+  }
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  target.hp = 1;
+  source.hand = [{ id: "rescue-order-slash-1", kind: "slash", suit: "spade", point: 8 }];
+  target.hand = [{ id: "rescue-order-self-peach", kind: "peach", suit: "heart", point: 6 }];
+  player.hand = [{ id: "rescue-order-player-peach", kind: "peach", suit: "diamond", point: 7 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "rescue-order-slash-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.alive, true);
+  assert.equal(target.hp, 1);
+  assert.ok(state.discard.some((card) => card.id === "rescue-order-self-peach"));
+  assert.equal(state.discard.some((card) => card.id === "rescue-order-player-peach"), false);
+});
+
+/**
+ * 验证濒死日志语义：进入濒死、按轮次求桃、成功脱离濒死。
+ */
+test("dying flow should emit enter-round-exit events", () => {
+  const state = createInitialGame(42);
+  const source = state.players[2];
+  const target = state.players[0];
+
+  for (const participant of state.players) {
+    participant.hand = [];
+  }
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  state.luoyiActivePlayerId = source.id;
+  target.hp = 1;
+  source.hand = [{ id: "dying-log-duel-1", kind: "duel", suit: "spade", point: 8 }];
+  target.hand = [
+    { id: "dying-log-peach-a", kind: "peach", suit: "heart", point: 6 },
+    { id: "dying-log-peach-b", kind: "peach", suit: "diamond", point: 7 }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "dying-log-duel-1",
+    targetId: target.id
+  });
+
+  const enterDying = state.events.some((event) => event.type === "dying" && event.message.includes("进入濒死状态"));
+  const rescueRounds = state.events.filter((event) => event.type === "rescue" && event.message.includes("发起第")).length;
+  const leaveDying = state.events.some((event) => event.type === "dying" && event.message.includes("已脱离濒死"));
+
+  assert.equal(enterDying, true);
+  assert.equal(rescueRounds, 2);
+  assert.equal(leaveDying, true);
+  assert.equal(target.alive, true);
+  assert.equal(target.hp, 1);
+});
+
+/**
  * 验证华佗【青囊】可弃一张手牌令目标回复1点且每回合限一次。
  */
 test("qingnang skill should heal once per turn by discarding one card", () => {
