@@ -166,6 +166,42 @@ test("dismantle should be canceled by nullify", () => {
 });
 
 /**
+ * 验证击杀反贼后，击杀者摸3张牌奖励。
+ */
+test("killer should draw three cards after killing a rebel", () => {
+  const state = createInitialGame(42);
+  const lord = state.players[0];
+  const rebel = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = lord.id;
+  state.phase = "play";
+  lord.hand = [{ id: "kill-reward-slash-1", kind: "slash", suit: "spade", point: 9 }];
+  rebel.hp = 1;
+  rebel.hand = [];
+  state.deck = [
+    { id: "kill-reward-draw-1", kind: "dodge", suit: "heart", point: 6 },
+    { id: "kill-reward-draw-2", kind: "slash", suit: "club", point: 3 },
+    { id: "kill-reward-draw-3", kind: "peach", suit: "diamond", point: 12 },
+    ...state.deck
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: lord.id,
+    cardId: "kill-reward-slash-1",
+    targetId: rebel.id
+  });
+
+  assert.equal(rebel.alive, false);
+  assert.equal(lord.hand.length, 3);
+  assert.ok(state.events.some((event) => event.message.includes("击杀反贼，摸 3 张牌")));
+});
+
+/**
  * 验证无懈策略切换为 seat-order 时，非延时锦囊可按座次由来源方优先打出无懈。
  */
 test("seat-order nullify policy should allow source-first nullify on trick", () => {
@@ -3935,6 +3971,37 @@ test("lianying skill should not trigger when hand is not emptied", () => {
 
   assert.equal(actor.hand.length, 1);
   assert.equal(actor.hand[0]?.id, "lianying-keep-1");
+});
+
+/**
+ * 验证陆逊在被【过河拆桥】弃掉最后手牌时也会触发【连营】。
+ */
+test("lianying should trigger when dismantle removes the last hand card", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const luxun = state.players[3];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, luxun.id, STANDARD_SKILL_IDS.luxunLianying);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "lianying-dismantle-1", kind: "dismantle", suit: "spade", point: 4 }];
+  luxun.hand = [{ id: "lianying-last-hand-1", kind: "dodge", suit: "club", point: 10 }];
+  state.deck = [{ id: "lianying-draw-after-dismantle", kind: "slash", suit: "heart", point: 8 }, ...state.deck];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "lianying-dismantle-1",
+    targetId: luxun.id
+  });
+
+  assert.equal(luxun.hand.length, 1);
+  assert.equal(luxun.hand[0]?.id, "lianying-draw-after-dismantle");
 });
 
 /**

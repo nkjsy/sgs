@@ -8,6 +8,42 @@ import {
   stepPhase
 } from "@sgs/core";
 
+const GENERAL_BASE_MAX_HP: Record<string, number> = {
+  caocao: 4,
+  zhangfei: 4,
+  machao: 4,
+  simayi: 3,
+  xiahoudun: 4,
+  guojia: 3,
+  zhangliao: 4,
+  xuchu: 4,
+  liubei: 4,
+  zhugeliang: 3,
+  zhouyu: 3,
+  huanggai: 4,
+  lvmeng: 4,
+  sunquan: 4,
+  sunshangxiang: 3,
+  daqiao: 3,
+  ganning: 4,
+  luxun: 3,
+  diaochan: 3,
+  guanyu: 4,
+  lvbu: 4,
+  zhaoyun: 4,
+  huangyueying: 3,
+  zhenji: 3,
+  huatuo: 3
+};
+
+function applyGeneralHp(slot: ReturnType<typeof createInitialGame>["players"][number], generalId: string): void {
+  const baseMaxHp = GENERAL_BASE_MAX_HP[generalId] ?? 4;
+  const roleBonus = slot.identity === "lord" ? 1 : 0;
+  const finalMaxHp = baseMaxHp + roleBonus;
+  slot.maxHp = finalMaxHp;
+  slot.hp = finalMaxHp;
+}
+
 export type SingleRosterMode = "fixed-demo" | "random-general-pool";
 
 export interface RunSingleSimulationOptions {
@@ -68,21 +104,26 @@ export function setupSingleDemoRoster(state: ReturnType<typeof createInitialGame
   const [player1, player2, player3, player4, player5] = state.players;
 
   player1.name = "刘备";
+  applyGeneralHp(player1, "liubei");
   assignSkillToPlayer(state, player1.id, STANDARD_SKILL_IDS.liubeiRende);
   assignSkillToPlayer(state, player1.id, STANDARD_SKILL_IDS.liubeiJijiang);
 
   player2.name = "周瑜";
+  applyGeneralHp(player2, "zhouyu");
   assignSkillToPlayer(state, player2.id, STANDARD_SKILL_IDS.zhouyuYingzi);
   assignSkillToPlayer(state, player2.id, STANDARD_SKILL_IDS.zhouyuFanjian);
 
   player3.name = "甘宁";
+  applyGeneralHp(player3, "ganning");
   assignSkillToPlayer(state, player3.id, STANDARD_SKILL_IDS.ganningQixi);
 
   player4.name = "陆逊";
+  applyGeneralHp(player4, "luxun");
   assignSkillToPlayer(state, player4.id, STANDARD_SKILL_IDS.luxunQianxun);
   assignSkillToPlayer(state, player4.id, STANDARD_SKILL_IDS.luxunLianying);
 
   player5.name = "貂蝉";
+  applyGeneralHp(player5, "diaochan");
   assignSkillToPlayer(state, player5.id, STANDARD_SKILL_IDS.diaochanBiyue);
 }
 
@@ -95,6 +136,7 @@ function setupRandomGeneralPoolRoster(state: ReturnType<typeof createInitialGame
     const slot = state.players[index];
     const general = chosen[index];
     slot.name = general.generalName;
+    applyGeneralHp(slot, general.generalId);
 
     for (const skillId of general.skills) {
       assignSkillToPlayer(state, slot.id, skillId);

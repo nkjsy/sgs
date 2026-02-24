@@ -848,6 +848,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
     }
 
     const movedCard = target.hand.shift() as Card;
+    tryTriggerLianyingAfterHandLoss(state, target);
     if (card.kind === "dismantle") {
       state.discard.push(movedCard);
       pushEvent(state, "trick", `${actor.name} 弃置了 ${target.name} 的 1 张手牌`);
@@ -1108,6 +1109,7 @@ function resolveSlashOnTarget(
     if (target.hand.length > 0) {
       const discarded = target.hand.shift() as Card;
       state.discard.push(discarded);
+      tryTriggerLianyingAfterHandLoss(state, target);
       pushEvent(state, "equip", `${source.name} 发动雌雄双股剑，${target.name} 弃置了 1 张手牌`);
     } else {
       drawCards(state, source.id, 1);
@@ -1227,6 +1229,7 @@ function discardOneCardForLiuli(state: GameState, target: PlayerState): Card | u
   if (target.hand.length > 0) {
     const card = target.hand.shift() as Card;
     state.discard.push(card);
+    tryTriggerLianyingAfterHandLoss(state, target);
     return card;
   }
 
@@ -1325,6 +1328,7 @@ function discardOneCardForIceSword(state: GameState, target: PlayerState): Card 
   if (target.hand.length > 0) {
     const card = target.hand.shift() as Card;
     state.discard.push(card);
+    tryTriggerLianyingAfterHandLoss(state, target);
     return card;
   }
 
@@ -2021,7 +2025,7 @@ function dealDamage(state: GameState, sourceId: string, targetId: string, amount
     tryTriggerFankui(state, source.id, target.id, amount);
     tryTriggerGanglie(state, source.id, target.id, amount);
 
-    resolveDyingAndDeath(state, target);
+    resolveDyingAndDeath(state, target, source);
   } finally {
     leaveDyingResolution(state);
   }
@@ -2152,6 +2156,7 @@ function tryTriggerFankui(state: GameState, sourceId: string, targetId: string, 
 function takeOneCardForFankui(state: GameState, source: PlayerState): Card | undefined {
   if (source.hand.length > 0) {
     const card = source.hand.shift() as Card;
+    tryTriggerLianyingAfterHandLoss(state, source);
     return card;
   }
 
@@ -2600,6 +2605,7 @@ function tryTriggerGanglie(state: GameState, sourceId: string, targetId: string,
       const discardA = source.hand.shift() as Card;
       const discardB = source.hand.shift() as Card;
       state.discard.push(discardA, discardB);
+      tryTriggerLianyingAfterHandLoss(state, source);
       pushEvent(state, "skill", `${owner.name} 发动刚烈，${source.name} 弃置了两张手牌`);
       continue;
     }
@@ -2700,7 +2706,7 @@ function tryRescueWithPeach(state: GameState, targetId: string): boolean {
   return true;
 }
 
-function resolveDyingAndDeath(state: GameState, target: PlayerState): void {
+function resolveDyingAndDeath(state: GameState, target: PlayerState, source?: PlayerState): void {
   if (!target.alive || target.hp > 0) {
     return;
   }
@@ -2714,6 +2720,53 @@ function resolveDyingAndDeath(state: GameState, target: PlayerState): void {
   target.alive = false;
   clearDeadPlayerCards(state, target);
   pushEvent(state, "death", `${target.name} 阵亡`);
+  applyKillRewardAndPunishment(state, source, target);
+}
+
+function applyKillRewardAndPunishment(state: GameState, killer: PlayerState | undefined, dead: PlayerState): void {
+  if (!killer || !killer.alive) {
+    return;
+  }
+
+  if (dead.identity === "rebel") {
+    drawCards(state, killer.id, 3);
+    pushEvent(state, "trick", `${killer.name} 击杀反贼，摸 3 张牌`);
+    return;
+  }
+
+  if (killer.identity === "lord" && dead.identity === "loyalist") {
+    discardAllCardsForPunishment(state, killer);
+    pushEvent(state, "trick", `${killer.name} 误杀忠臣，弃置所有牌`);
+  }
+}
+
+function discardAllCardsForPunishment(state: GameState, player: PlayerState): void {
+  for (const card of player.hand) {
+    state.discard.push(card);
+  }
+  player.hand = [];
+
+  if (player.equipment.weapon) {
+    state.discard.push(player.equipment.weapon);
+    player.equipment.weapon = null;
+  }
+  if (player.equipment.armor) {
+    state.discard.push(player.equipment.armor);
+    player.equipment.armor = null;
+  }
+  if (player.equipment.horsePlus) {
+    state.discard.push(player.equipment.horsePlus);
+    player.equipment.horsePlus = null;
+  }
+  if (player.equipment.horseMinus) {
+    state.discard.push(player.equipment.horseMinus);
+    player.equipment.horseMinus = null;
+  }
+
+  for (const trick of player.judgmentZone.delayedTricks) {
+    state.discard.push(trick);
+  }
+  player.judgmentZone.delayedTricks = [];
 }
 
 function enterDyingResolution(state: GameState): void {
@@ -2857,6 +2910,7 @@ function resolveDiscardIfNeeded(state: GameState, playerId: string): void {
   while (player.hand.length > player.hp) {
     const card = player.hand.pop() as Card;
     state.discard.push(card);
+    tryTriggerLianyingAfterHandLoss(state, player);
     pushEvent(state, "discard", `${player.name} 弃置了 1 张手牌`);
   }
 }
