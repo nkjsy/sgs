@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createDeck } from "../cards";
-import { applyAction, createInitialGame, getLegalActions, stepPhase } from "../engine";
+import {
+  applyAction,
+  createInitialGame,
+  getLegalActions,
+  queueResponseDecision,
+  setLuoyiChoice,
+  setResponsePreference,
+  stepPhase
+} from "../engine";
 import { STANDARD_SKILL_IDS, assignSkillToPlayer } from "../skills";
 import { PlayCardAction } from "../types";
 
@@ -94,6 +102,34 @@ test("slash target should respect attack range", () => {
 });
 
 /**
+ * 验证结算层兜底：强行提交越距离【杀】动作会被拒绝并退回手牌。
+ */
+test("slash resolution should reject forced out-of-range target", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const outOfRangeTarget = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "slash-out-range-1", kind: "slash", suit: "spade", point: 7 }];
+  outOfRangeTarget.hp = 4;
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-out-range-1",
+    targetId: outOfRangeTarget.id
+  });
+
+  assert.equal(outOfRangeTarget.hp, 4);
+  assert.ok(actor.hand.some((card) => card.id === "slash-out-range-1"));
+});
+
+/**
  * 验证马超【马术】可令你计算与其他角色距离-1，从而无武器也可指定原距离2的杀目标。
  */
 test("mashu skill should reduce distance by 1 for slash targeting", () => {
@@ -131,6 +167,70 @@ test("snatch should only target distance-1 player with cards", () => {
     .sort();
 
   assert.deepEqual(targets, ["P2", "P5"]);
+});
+
+/**
+ * 验证【顺手牵羊】会为同一目标生成“手牌/装备区/判定区”的区域选择动作。
+ */
+test("snatch should expose selectable target zones", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  actor.hand = [{ id: "snatch-zone-1", kind: "snatch", suit: "spade", point: 6 }];
+  target.hand = [{ id: "snatch-zone-hand", kind: "dodge", suit: "heart", point: 2 }];
+  target.equipment.weapon = { id: "snatch-zone-weapon", kind: "weapon_blade", suit: "club", point: 5 };
+  target.judgmentZone.delayedTricks = [{ id: "snatch-zone-judge", kind: "indulgence", suit: "diamond", point: 9 }];
+
+  stepPhase(state);
+  const zones = getLegalActions(state)
+    .filter(
+      (action): action is PlayCardAction =>
+        action.type === "play-card" && action.cardId === "snatch-zone-1" && action.targetId === target.id
+    )
+    .map((action) => action.targetZone)
+    .filter((zone): zone is string => Boolean(zone))
+    .sort();
+
+  assert.deepEqual(zones, ["equipment", "hand", "judgment"]);
+});
+
+/**
+ * 验证【过河拆桥】按所选区域结算（装备区/判定区均可被指定）。
+ */
+test("dismantle should resolve with selected target zone", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+    player.equipment.weapon = null;
+    player.equipment.armor = null;
+    player.equipment.horsePlus = null;
+    player.equipment.horseMinus = null;
+    player.judgmentZone.delayedTricks = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "dismantle-zone-1", kind: "dismantle", suit: "club", point: 8 }];
+  target.hand = [{ id: "dismantle-zone-hand", kind: "slash", suit: "spade", point: 7 }];
+  target.equipment.weapon = { id: "dismantle-zone-weapon", kind: "weapon_crossbow", suit: "diamond", point: 1 };
+  target.judgmentZone.delayedTricks = [{ id: "dismantle-zone-judge", kind: "indulgence", suit: "heart", point: 12 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "dismantle-zone-1",
+    targetId: target.id,
+    targetZone: "equipment"
+  });
+
+  assert.equal(target.equipment.weapon, null);
+  assert.equal(target.hand.some((card) => card.id === "dismantle-zone-hand"), true);
+  assert.equal(target.judgmentZone.delayedTricks.some((card) => card.id === "dismantle-zone-judge"), true);
+  assert.equal(state.discard.some((card) => card.id === "dismantle-zone-weapon"), true);
 });
 
 /**
@@ -179,6 +279,7 @@ test("killer should draw three cards after killing a rebel", () => {
 
   state.currentPlayerId = lord.id;
   state.phase = "play";
+  lord.equipment.weapon = { id: "kill-reward-weapon-1", kind: "weapon_qinggang_sword", suit: "spade", point: 2 };
   lord.hand = [{ id: "kill-reward-slash-1", kind: "slash", suit: "spade", point: 9 }];
   rebel.hp = 1;
   rebel.hand = [];
@@ -327,7 +428,7 @@ test("barbarian should require slash response for each target", () => {
 });
 
 /**
- * 验证【万箭齐发】可被目标同阵营角色用【无懈可击】抵消。
+ * 验证【万箭齐发】可被目标身份同阵营角色用【无懈可击】抵消。
  */
 test("archery should be cancelable per target by nullify", () => {
   const state = createInitialGame(42);
@@ -351,6 +452,97 @@ test("archery should be cancelable per target by nullify", () => {
 
   assert.equal(target.hp, hpBefore);
   assert.ok(state.discard.some((card) => card.id === "protector-nullify"));
+});
+
+test("queued nullify decisions should be consumed in order", () => {
+  const state = createInitialGame(42);
+  const source = state.players[2];
+  const target = state.players[1];
+  const human = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+
+  source.hand = [
+    { id: "queue-nullify-dismantle", kind: "dismantle" },
+    { id: "queue-nullify-source-1", kind: "nullify" }
+  ];
+  target.hand = [{ id: "queue-nullify-target-1", kind: "slash" }];
+  human.hand = [
+    { id: "queue-nullify-human-1", kind: "nullify" },
+    { id: "queue-nullify-human-2", kind: "nullify" }
+  ];
+
+  queueResponseDecision(state, human.id, "nullify", true);
+  queueResponseDecision(state, human.id, "nullify", false);
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "queue-nullify-dismantle",
+    targetId: target.id
+  });
+
+  assert.ok(state.discard.some((card) => card.id === "queue-nullify-human-1"));
+  assert.ok(state.discard.some((card) => card.id === "queue-nullify-source-1"));
+  assert.equal(human.hand.some((card) => card.id === "queue-nullify-human-2"), true);
+  assert.ok(state.discard.some((card) => card.id === "queue-nullify-target-1"));
+});
+
+test("queued nullify decisions should be cleared after action", () => {
+  const state = createInitialGame(42);
+  const source = state.players[2];
+  const target = state.players[1];
+  const human = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+
+  source.hand = [
+    { id: "clear-queue-dismantle-1", kind: "dismantle" },
+    { id: "clear-queue-dismantle-2", kind: "dismantle" },
+    { id: "clear-queue-source-nullify-1", kind: "nullify" }
+  ];
+  target.hand = [
+    { id: "clear-queue-target-card-1", kind: "slash" },
+    { id: "clear-queue-target-card-2", kind: "dodge" }
+  ];
+  human.hand = [{ id: "clear-queue-human-nullify-1", kind: "nullify" }];
+
+  queueResponseDecision(state, human.id, "nullify", true);
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "clear-queue-dismantle-1",
+    targetId: target.id
+  });
+
+  assert.ok(state.discard.some((card) => card.id === "clear-queue-human-nullify-1"));
+  assert.ok(state.discard.some((card) => card.id === "clear-queue-source-nullify-1"));
+  assert.equal(state.responseDecisionQueueByPlayer[human.id]?.nullify?.length ?? 0, 0);
+
+  source.hand.push({ id: "clear-queue-source-nullify-2", kind: "nullify" });
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "clear-queue-dismantle-2",
+    targetId: target.id
+  });
+
+  assert.equal(
+    state.discard.some((card) => card.id === "clear-queue-source-nullify-2"),
+    false,
+    "第二次行动不应受上次队列残留影响，来源方无懈应保留在手牌"
+  );
 });
 
 /**
@@ -1695,12 +1887,11 @@ test("collateral forced slash should trigger kylin bow horse discard", () => {
 });
 
 /**
- * 验证【无中生有】生效时目标摸 2 张牌。
+ * 验证【无中生有】只能对自己生效并摸 2 张牌。
  */
-test("ex nihilo should let target draw 2 cards", () => {
+test("ex nihilo should only target self and draw 2 cards", () => {
   const state = createInitialGame(42);
   const actor = state.players[0];
-  const target = state.players[1];
 
   for (const player of state.players) {
     player.hand = [];
@@ -1714,14 +1905,29 @@ test("ex nihilo should let target draw 2 cards", () => {
     { id: "draw-b", kind: "dodge" }
   ];
 
+  const legalActions = getLegalActions(state).filter(
+    (
+      action
+    ): action is {
+      type: "play-card";
+      actorId: string;
+      cardId: string;
+      targetId?: string;
+      secondaryTargetId?: string;
+    } =>
+      action.type === "play-card" && action.cardId === "ex-nihilo-1"
+  );
+  assert.equal(legalActions.length, 1);
+  assert.equal(legalActions[0]?.targetId, actor.id);
+
   applyAction(state, {
     type: "play-card",
     actorId: actor.id,
     cardId: "ex-nihilo-1",
-    targetId: target.id
+    targetId: actor.id
   });
 
-  assert.equal(target.hand.length, 2);
+  assert.equal(actor.hand.length, 2);
   assert.ok(state.discard.some((card) => card.id === "ex-nihilo-1"));
 });
 
@@ -1729,9 +1935,8 @@ test("ex nihilo should let target draw 2 cards", () => {
  * 验证【无中生有】可被【无懈可击】抵消。
  */
 test("ex nihilo should be canceled by nullify", () => {
-  const state = createInitialGame(42);
+  const state = createInitialGame(42, { nullifyResponsePolicy: "seat-order" });
   const actor = state.players[2];
-  const target = state.players[0];
   const protector = state.players[1];
 
   for (const player of state.players) {
@@ -1751,10 +1956,10 @@ test("ex nihilo should be canceled by nullify", () => {
     type: "play-card",
     actorId: actor.id,
     cardId: "ex-nihilo-2",
-    targetId: target.id
+    targetId: actor.id
   });
 
-  assert.equal(target.hand.length, 0);
+  assert.equal(actor.hand.length, 0);
   assert.ok(state.discard.some((card) => card.id === "nullify-ex-1"));
 });
 
@@ -1888,9 +2093,9 @@ test("yiji skill should draw 2 cards after taking damage", () => {
 });
 
 /**
- * 验证 AI 郭嘉【遗计】会将本次摸到的牌分配给同阵营角色。
+ * 验证 AI 郭嘉【遗计】会将本次摸到的牌分配给身份同阵营角色。
  */
-test("yiji skill should distribute drawn cards to same-camp ally for ai owner", () => {
+test("yiji skill should distribute drawn cards to identity-camp ally for ai owner", () => {
   const state = createInitialGame(42);
   const actor = state.players[2];
   const target = state.players[1];
@@ -2860,6 +3065,40 @@ test("blade follow-up should stop when no slash remains", () => {
 });
 
 /**
+ * 验证可通过响应偏好关闭青龙偃月刀追击。
+ */
+test("blade follow-up should respect disabled response preference", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.equipment.weapon = { id: "blade-pref-off-weapon-1", kind: "weapon_blade", suit: "spade", point: 5 };
+  actor.hand = [
+    { id: "slash-pref-off-1", kind: "slash", suit: "club", point: 9 },
+    { id: "slash-pref-off-2", kind: "slash", suit: "spade", point: 10 }
+  ];
+  target.hand = [{ id: "target-dodge-pref-off-1", kind: "dodge", suit: "diamond", point: 6 }];
+
+  const hpBefore = target.hp;
+  setResponsePreference(state, actor.id, "blade-follow-up", false);
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-pref-off-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, hpBefore);
+  assert.ok(actor.hand.some((card) => card.id === "slash-pref-off-2"));
+});
+
+/**
  * 验证青龙偃月刀可在连续闪避下持续追击，直到目标无闪或攻击方无可用【杀】。
  */
 test("blade follow-up should chain across multiple dodges within slash limit", () => {
@@ -3052,6 +3291,7 @@ test("luoyi skill should reduce draw and increase slash damage", () => {
     { id: "luoyi-draw-2", kind: "slash", suit: "spade", point: 9 }
   ];
 
+  setLuoyiChoice(state, actor.id, true);
   stepPhase(state);
   assert.equal(actor.hand.length, 1);
 
@@ -3247,9 +3487,9 @@ test("rende skill should recover only once per turn", () => {
 });
 
 /**
- * 验证刘备【激将】可在【决斗】响应链中由同阵营角色提供【杀】。
+ * 验证刘备【激将】可在【决斗】响应链中由蜀势力角色提供【杀】。
  */
-test("jijiang skill should request slash from same-camp ally in duel", () => {
+test("jijiang skill should request slash from shu ally in duel", () => {
   const state = createInitialGame(42);
   const source = state.players[2];
   const target = state.players[0];
@@ -3260,6 +3500,7 @@ test("jijiang skill should request slash from same-camp ally in duel", () => {
   }
 
   assignSkillToPlayer(state, target.id, STANDARD_SKILL_IDS.liubeiJijiang);
+  assignSkillToPlayer(state, ally.id, STANDARD_SKILL_IDS.zhangfeiPaoxiao);
 
   state.currentPlayerId = source.id;
   state.phase = "play";
@@ -3281,9 +3522,9 @@ test("jijiang skill should request slash from same-camp ally in duel", () => {
 });
 
 /**
- * 验证刘备【激将】无同阵营可供【杀】时无法替代响应。
+ * 验证刘备【激将】无蜀势力可供【杀】时无法替代响应。
  */
-test("jijiang skill should fail when no same-camp slash available", () => {
+test("jijiang skill should fail when no shu slash available", () => {
   const state = createInitialGame(42);
   const source = state.players[2];
   const target = state.players[0];
@@ -3307,6 +3548,117 @@ test("jijiang skill should fail when no same-camp slash available", () => {
   });
 
   assert.equal(target.hp, targetHpBefore - 1);
+});
+
+/**
+ * 验证青龙偃月刀追击会优先消耗来源角色自己的【杀】，而非先走【激将】。
+ */
+test("blade follow-up should consume owner's slash before jijiang", () => {
+  const state = createInitialGame(42);
+  const source = state.players[0];
+  const target = state.players[2];
+  const shuAlly = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, source.id, STANDARD_SKILL_IDS.liubeiJijiang);
+  assignSkillToPlayer(state, shuAlly.id, STANDARD_SKILL_IDS.guanyuWusheng);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.equipment.weapon = { id: "blade-owner-weapon-1", kind: "weapon_blade", suit: "spade", point: 5 };
+  source.hand = [
+    { id: "blade-owner-slash-open-1", kind: "slash", suit: "heart", point: 9 },
+    { id: "blade-owner-slash-follow-1", kind: "slash", suit: "club", point: 7 }
+  ];
+  target.hand = [{ id: "blade-owner-target-dodge-1", kind: "dodge", suit: "diamond", point: 6 }];
+  shuAlly.hand = [{ id: "blade-owner-ally-slash-1", kind: "slash", suit: "spade", point: 8 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "blade-owner-slash-open-1",
+    targetId: target.id
+  });
+
+  assert.equal(source.hand.some((card) => card.id === "blade-owner-slash-follow-1"), false);
+  assert.equal(shuAlly.hand.some((card) => card.id === "blade-owner-ally-slash-1"), true);
+});
+
+/**
+ * 验证刘备【激将】可在出牌阶段主动当【杀】使用（由蜀势力角色提供）。
+ */
+test("jijiang should be manually usable as slash in play phase", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const ally = state.players[1];
+  const target = state.players[4];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.liubeiJijiang);
+  assignSkillToPlayer(state, ally.id, STANDARD_SKILL_IDS.zhangfeiPaoxiao);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  ally.hand = [{ id: "ally-slash-jijiang-manual-1", kind: "slash", suit: "heart", point: 9 }];
+
+  const jijiangActions = getLegalActions(state).filter(
+    (
+      action
+    ): action is {
+      type: "play-card";
+      actorId: string;
+      cardId: string;
+      targetId?: string;
+      secondaryTargetId?: string;
+    } => action.type === "play-card" && action.cardId.startsWith("__virtual_jijiang__::")
+  );
+  assert.ok(jijiangActions.some((action) => action.targetId === target.id));
+
+  const targetHpBefore = target.hp;
+  const chosen = jijiangActions.find((action) => action.targetId === target.id) as PlayCardAction;
+  applyAction(state, chosen);
+
+  assert.equal(target.hp, targetHpBefore - 1);
+  assert.equal(ally.hand.length, 0);
+});
+
+/**
+ * 验证刘备【激将】不会向非蜀势力角色征调【杀】。
+ */
+test("jijiang should not request slash from non-shu responders", () => {
+  const state = createInitialGame(42);
+  const source = state.players[2];
+  const target = state.players[0];
+  const nonShuAlly = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, target.id, STANDARD_SKILL_IDS.liubeiJijiang);
+  assignSkillToPlayer(state, nonShuAlly.id, STANDARD_SKILL_IDS.lvmengKeji);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.hand = [{ id: "duel-jijiang-nonshu-1", kind: "duel", suit: "spade", point: 12 }];
+  nonShuAlly.hand = [{ id: "nonshu-slash-jijiang-1", kind: "slash", suit: "club", point: 6 }];
+
+  const targetHpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "duel-jijiang-nonshu-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, targetHpBefore - 1);
+  assert.equal(nonShuAlly.hand.length, 1);
 });
 
 /**
@@ -4272,9 +4624,9 @@ test("xiaoji skill should trigger when weapon is transferred by collateral", () 
 });
 
 /**
- * 验证曹操【奸雄】在受到有来源伤害后可获得来源一张牌。
+ * 验证曹操【奸雄】在受到有来源伤害后可获得造成伤害的牌。
  */
-test("jianxiong skill should gain one card from damage source", () => {
+test("jianxiong skill should gain the card that caused damage", () => {
   const state = createInitialGame(42);
   const source = state.players[0];
   const target = state.players[1];
@@ -4300,13 +4652,14 @@ test("jianxiong skill should gain one card from damage source", () => {
   });
 
   assert.equal(target.hand.length, 1);
-  assert.equal(target.hand[0]?.id, "jianxiong-source-extra-1");
+  assert.equal(target.hand[0]?.id, "jianxiong-source-slash-1");
+  assert.equal(source.hand.some((card) => card.id === "jianxiong-source-extra-1"), true);
 });
 
 /**
- * 验证曹操【护驾】可由同阵营角色提供【闪】响应【杀】。
+ * 验证曹操【护驾】可由魏势力角色提供【闪】响应【杀】。
  */
-test("hujia skill should request dodge from same-camp ally", () => {
+test("hujia skill should request dodge from wei ally", () => {
   const state = createInitialGame(42);
   const source = state.players[2];
   const lord = state.players[0];
@@ -4317,9 +4670,11 @@ test("hujia skill should request dodge from same-camp ally", () => {
   }
 
   assignSkillToPlayer(state, lord.id, STANDARD_SKILL_IDS.caocaoHujia);
+  assignSkillToPlayer(state, ally.id, STANDARD_SKILL_IDS.zhangliaoTuxi);
 
   state.currentPlayerId = source.id;
   state.phase = "play";
+  source.equipment.weapon = { id: "hujia-weapon-1", kind: "weapon_qinggang_sword", suit: "spade", point: 2 };
   source.hand = [{ id: "hujia-slash-1", kind: "slash", suit: "spade", point: 9 }];
   ally.hand = [{ id: "hujia-dodge-ally-1", kind: "dodge", suit: "heart", point: 3 }];
 
@@ -4333,6 +4688,89 @@ test("hujia skill should request dodge from same-camp ally", () => {
 
   assert.equal(lord.hp, lordHpBefore);
   assert.ok(state.discard.some((card) => card.id === "hujia-dodge-ally-1"));
+});
+
+/**
+ * 验证曹操【护驾】不会出现“首回合可用、后续回合失效”。
+ */
+test("hujia should remain usable on later turns", () => {
+  const state = createInitialGame(42);
+  const source = state.players[2];
+  const lord = state.players[0];
+  const ally = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, lord.id, STANDARD_SKILL_IDS.caocaoHujia);
+  assignSkillToPlayer(state, ally.id, STANDARD_SKILL_IDS.zhangliaoTuxi);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.equipment.weapon = { id: "hujia-weapon-2", kind: "weapon_qinggang_sword", suit: "club", point: 2 };
+  source.hand = [{ id: "hujia-slash-turn1", kind: "slash", suit: "spade", point: 9 }];
+  ally.hand = [{ id: "hujia-dodge-turn1", kind: "dodge", suit: "heart", point: 3 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "hujia-slash-turn1",
+    targetId: lord.id
+  });
+
+  const hpAfterFirst = lord.hp;
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  state.slashUsedInTurn = 0;
+  source.hand = [{ id: "hujia-slash-turn2", kind: "slash", suit: "club", point: 11 }];
+  ally.hand = [{ id: "hujia-dodge-turn2", kind: "dodge", suit: "diamond", point: 2 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "hujia-slash-turn2",
+    targetId: lord.id
+  });
+
+  assert.equal(lord.hp, hpAfterFirst);
+  assert.ok(state.discard.some((card) => card.id === "hujia-dodge-turn1"));
+  assert.ok(state.discard.some((card) => card.id === "hujia-dodge-turn2"));
+});
+
+/**
+ * 验证曹操【护驾】不会向非魏势力角色征调【闪】。
+ */
+test("hujia should not request dodge from non-wei responders", () => {
+  const state = createInitialGame(42);
+  const source = state.players[2];
+  const lord = state.players[0];
+  const nonWei = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, lord.id, STANDARD_SKILL_IDS.caocaoHujia);
+  assignSkillToPlayer(state, nonWei.id, STANDARD_SKILL_IDS.zhangfeiPaoxiao);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.equipment.weapon = { id: "hujia-weapon-3", kind: "weapon_qinggang_sword", suit: "diamond", point: 2 };
+  source.hand = [{ id: "hujia-slash-nonwei", kind: "slash", suit: "spade", point: 8 }];
+  nonWei.hand = [{ id: "hujia-dodge-nonwei", kind: "dodge", suit: "heart", point: 2 }];
+
+  const lordHpBefore = lord.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "hujia-slash-nonwei",
+    targetId: lord.id
+  });
+
+  assert.equal(lord.hp, lordHpBefore - 1);
+  assert.equal(nonWei.hand.length, 1);
 });
 
 /**
@@ -4420,7 +4858,7 @@ test("qicai skill should ignore distance limit for snatch", () => {
 });
 
 /**
- * 验证孙权主公技【救援】在同阵营他人用桃救主公时额外回复1点。
+ * 验证孙权主公技【救援】在吴势力角色用桃救主公时额外回复1点。
  */
 test("jiuyuan skill should grant extra heal when ally rescues lord", () => {
   const state = createInitialGame(42);
@@ -4433,9 +4871,11 @@ test("jiuyuan skill should grant extra heal when ally rescues lord", () => {
   }
 
   assignSkillToPlayer(state, lord.id, STANDARD_SKILL_IDS.sunquanJiuyuan);
+  assignSkillToPlayer(state, ally.id, STANDARD_SKILL_IDS.lvmengKeji);
 
   state.currentPlayerId = source.id;
   state.phase = "play";
+  source.equipment.weapon = { id: "jiuyuan-weapon-1", kind: "weapon_qinggang_sword", suit: "club", point: 2 };
   lord.hp = 1;
   source.hand = [{ id: "jiuyuan-slash-1", kind: "slash", suit: "spade", point: 9 }];
   ally.hand = [{ id: "jiuyuan-peach-1", kind: "peach", suit: "heart", point: 7 }];
@@ -4498,6 +4938,7 @@ test("jiuyuan should rescue deep dying lord with one ally peach", () => {
   }
 
   assignSkillToPlayer(state, lord.id, STANDARD_SKILL_IDS.sunquanJiuyuan);
+  assignSkillToPlayer(state, ally.id, STANDARD_SKILL_IDS.lvmengKeji);
 
   state.currentPlayerId = source.id;
   state.phase = "play";
@@ -4516,6 +4957,38 @@ test("jiuyuan should rescue deep dying lord with one ally peach", () => {
   assert.equal(lord.alive, true);
   assert.equal(lord.hp, 1);
   assert.ok(state.discard.some((card) => card.id === "deep-jiuyuan-peach-1"));
+});
+
+/**
+ * 验证主公技【救援】不会由非吴势力角色触发额外回复。
+ */
+test("jiuyuan should not grant extra heal from non-wu rescuer", () => {
+  const state = createInitialGame(42);
+  const source = state.players[2];
+  const lord = state.players[0];
+  const ally = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, lord.id, STANDARD_SKILL_IDS.sunquanJiuyuan);
+  assignSkillToPlayer(state, ally.id, STANDARD_SKILL_IDS.zhangfeiPaoxiao);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  lord.hp = 1;
+  source.hand = [{ id: "jiuyuan-nonwu-slash-1", kind: "slash", suit: "spade", point: 7 }];
+  ally.hand = [{ id: "jiuyuan-nonwu-peach-1", kind: "peach", suit: "heart", point: 10 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "jiuyuan-nonwu-slash-1",
+    targetId: lord.id
+  });
+
+  assert.equal(lord.hp, 1);
 });
 
 /**
@@ -4683,6 +5156,7 @@ test("jijiu skill should allow red card as peach outside own turn", () => {
 
   state.currentPlayerId = source.id;
   state.phase = "play";
+  source.equipment.weapon = { id: "jijiu-weapon-1", kind: "weapon_qinggang_sword", suit: "heart", point: 2 };
   target.hp = 1;
   source.hand = [{ id: "jijiu-slash-1", kind: "slash", suit: "spade", point: 10 }];
   rescuer.hand = [{ id: "jijiu-red-1", kind: "dodge", suit: "heart", point: 5 }];

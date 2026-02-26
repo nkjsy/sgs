@@ -3,39 +3,33 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SGS 单机版 - Web 壳</title>
-    <style>
-      body {
-        margin: 0;
-        font-family: Arial, sans-serif;
-        background: #f6f7fb;
-        color: #1d2433;
-      }
-      main {
-        max-width: 900px;
-        margin: 24px auto;
-        padding: 16px;
-      }
-      .panel {
-        border: 1px solid #d8dce8;
-        border-radius: 8px;
-        background: #fff;
-        padding: 12px;
-        margin-bottom: 12px;
-      }
-    </style>
+    <title>SGS 单机版 Web</title>
   </head>
   <body>
-    <main>
-      <h1>三国杀单机版（开发中）</h1>
-      <section class="panel">
-        <h2>状态</h2>
-        <p>当前为 Web 展示层骨架，后续将接入 core 事件流与玩家交互。</p>
-      </section>
-      <section class="panel">
-        <h2>下一步</h2>
-        <p>实现手牌区、角色区、日志区，并将玩家动作回传给本地裁判层。</p>
-      </section>
-    </main>
+    <div id="app">正在加载 SGS Web...</div>
+    <script>
+      window.__SGS_APP_BOOTED = false;
+      window.setTimeout(() => {
+        if (window.__SGS_APP_BOOTED) {
+          return;
+        }
+
+        const app = document.getElementById("app");
+        if (!app) {
+          return;
+        }
+
+        const currentUrl = window.location.href;
+        app.innerHTML = `
+          <main style="max-width: 920px; margin: 24px auto; padding: 12px; font-family: 'Microsoft YaHei', Arial, sans-serif; color: #1d2433;">
+            <h1 style="font-size: 18px; margin: 0 0 12px;">SGS Web 未成功启动</h1>
+            <p style="margin: 0 0 8px; color: #4b556b;">当前地址：${currentUrl}</p>
+            <p style="margin: 0 0 8px; color: #4b556b;">请确认你打开的是终端输出的 Vite 地址（例如 http://localhost:5174），不要直接打开本地 index.html 文件。</p>
+            <p style="margin: 0; color: #4b556b;">如果仍失败，请打开浏览器控制台（F12）查看首条红色报错并发给我。</p>
+          </main>
+        `;
+      }, 1200);
+    </script>
+    <script type="module" src="/src/main.ts"></script>
   </body>
- </html>
+</html>

@@ -30,6 +30,18 @@ export interface SkillSystemState {
   playerSkills: Record<string, string[]>;
 }
 
+export type ResponseKind = "dodge" | "slash" | "nullify" | "blade-follow-up" | "peach" | "hujia" | "jijiang";
+
+export interface ResponsePreference {
+  dodge?: boolean;
+  slash?: boolean;
+  nullify?: boolean;
+  "blade-follow-up"?: boolean;
+  peach?: boolean;
+  hujia?: boolean;
+  jijiang?: boolean;
+}
+
 /**
  * 定义当前可用的基础卡牌类型。
  */
@@ -147,6 +159,8 @@ export interface PlayCardAction {
   targetId?: string;
   /** 第二目标玩家编号，仅部分双目标牌使用。 */
   secondaryTargetId?: string;
+  /** 目标区域选择（用于顺手牵羊/过河拆桥）。 */
+  targetZone?: "hand" | "equipment" | "judgment";
 }
 
 /**
@@ -198,6 +212,8 @@ export interface GameState {
   skipPlayPhaseForCurrentTurn: boolean;
   /** 当前回合【裸衣】增伤生效角色编号。 */
   luoyiActivePlayerId: string | null;
+  /** 当前回合各角色是否选择发动【裸衣】。 */
+  luoyiChosenInTurnByPlayer: Record<string, boolean>;
   /** 当前回合各角色通过【仁德】给出的手牌数量。 */
   rendeGivenInTurnByPlayer: Record<string, number>;
   /** 当前回合各角色是否已通过【仁德】触发回复。 */
@@ -212,6 +228,10 @@ export interface GameState {
   lijianUsedInTurnByPlayer: Record<string, boolean>;
   /** 当前回合各角色是否已发动过【青囊】。 */
   qingnangUsedInTurnByPlayer: Record<string, boolean>;
+  /** 单次结算内的人类响应偏好（用于 Web 响应窗口）。 */
+  responsePreferenceByPlayer: Record<string, ResponsePreference>;
+  /** 当前回合各角色的响应决策队列。 */
+  responseDecisionQueueByPlayer: Record<string, Partial<Record<ResponseKind, boolean[]>>>;
   /** 获胜阵营，未结束时为空。 */
   winner: "lord-side" | "rebel-side" | "renegade" | null;
   /** 随机种子。 */
