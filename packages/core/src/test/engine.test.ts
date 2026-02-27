@@ -195,6 +195,43 @@ test("snatch should expose selectable target zones", () => {
   assert.deepEqual(zones, ["equipment", "hand", "judgment"]);
 });
 
+test("snatch should allow choosing specific equipment card when multiple exist", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+    player.equipment.weapon = null;
+    player.equipment.armor = null;
+    player.equipment.horsePlus = null;
+    player.equipment.horseMinus = null;
+    player.judgmentZone.delayedTricks = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "snatch-equip-choice-1", kind: "snatch", suit: "spade", point: 6 }];
+  target.equipment.weapon = { id: "snatch-target-weapon", kind: "weapon_blade", suit: "club", point: 5 };
+  target.equipment.armor = { id: "snatch-target-armor", kind: "armor_eight_diagram", suit: "spade", point: 2 };
+
+  const legal = getLegalActions(state).filter(
+    (action): action is PlayCardAction =>
+      action.type === "play-card" &&
+      action.cardId === "snatch-equip-choice-1" &&
+      action.targetId === target.id &&
+      action.targetZone === "equipment"
+  );
+  const armorAction = legal.find((action) => action.targetCardId === "snatch-target-armor");
+  assert.ok(armorAction);
+
+  applyAction(state, armorAction);
+
+  assert.equal(target.equipment.armor, null);
+  assert.equal(target.equipment.weapon?.id, "snatch-target-weapon");
+  assert.ok(actor.hand.some((card) => card.id === "snatch-target-armor"));
+});
+
 /**
  * 验证【过河拆桥】按所选区域结算（装备区/判定区均可被指定）。
  */
@@ -231,6 +268,31 @@ test("dismantle should resolve with selected target zone", () => {
   assert.equal(target.hand.some((card) => card.id === "dismantle-zone-hand"), true);
   assert.equal(target.judgmentZone.delayedTricks.some((card) => card.id === "dismantle-zone-judge"), true);
   assert.equal(state.discard.some((card) => card.id === "dismantle-zone-weapon"), true);
+});
+
+test("indulgence should target all opponents except qianxun owner", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const qianxunOwner = state.players[1];
+  const normalTarget = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+    player.judgmentZone.delayedTricks = [];
+  }
+
+  assignSkillToPlayer(state, qianxunOwner.id, STANDARD_SKILL_IDS.luxunQianxun);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "indulgence-target-check-1", kind: "indulgence", suit: "heart", point: 7 }];
+
+  const actions = getLegalActions(state).filter(
+    (action): action is PlayCardAction => action.type === "play-card" && action.cardId === "indulgence-target-check-1"
+  );
+
+  assert.equal(actions.some((action) => action.targetId === qianxunOwner.id), false);
+  assert.equal(actions.some((action) => action.targetId === normalTarget.id), true);
 });
 
 /**
@@ -4191,6 +4253,46 @@ test("liuli skill should not redirect when no valid target", () => {
 
   assert.equal(liuliOwner.hp, hpBefore);
   assert.equal(liuliOwner.hand.length, 0);
+});
+
+test("liuli skill should not redirect to target outside liuli owner's attack range", () => {
+  const state = createInitialGame(42);
+  const source = state.players[0];
+  const liuliOwner = state.players[1];
+  const nearTarget = state.players[2];
+  const farTarget = state.players[3];
+
+  for (const player of state.players) {
+    player.hand = [];
+    player.alive = false;
+  }
+
+  source.alive = true;
+  liuliOwner.alive = true;
+  nearTarget.alive = true;
+  farTarget.alive = true;
+
+  assignSkillToPlayer(state, liuliOwner.id, STANDARD_SKILL_IDS.daqiaoLiuli);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.equipment.weapon = { id: "liuli-source-weapon-range-1", kind: "weapon_blade", suit: "spade", point: 5 };
+  source.hand = [{ id: "liuli-source-slash-range-1", kind: "slash", suit: "club", point: 7 }];
+  liuliOwner.hand = [{ id: "liuli-discard-range-1", kind: "dodge", suit: "heart", point: 4 }];
+  nearTarget.hand = [{ id: "liuli-near-dodge-1", kind: "dodge", suit: "heart", point: 8 }];
+  farTarget.hand = [{ id: "liuli-far-dodge-1", kind: "dodge", suit: "diamond", point: 9 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "liuli-source-slash-range-1",
+    targetId: liuliOwner.id
+  });
+
+  assert.equal(farTarget.hp, farTarget.maxHp);
+  assert.equal(liuliOwner.hp, liuliOwner.maxHp);
+  assert.ok(state.events.some((event) => event.message.includes(`将杀转移给 ${nearTarget.name}`)));
+  assert.ok(state.events.every((event) => !event.message.includes(`将杀转移给 ${farTarget.name}`)));
 });
 
 /**

@@ -161,6 +161,8 @@ export interface PlayCardAction {
   secondaryTargetId?: string;
   /** 目标区域选择（用于顺手牵羊/过河拆桥）。 */
   targetZone?: "hand" | "equipment" | "judgment";
+  /** 目标卡牌编号（用于在装备区/判定区中精确选择）。 */
+  targetCardId?: string;
 }
 
 /**
@@ -214,6 +216,8 @@ export interface GameState {
   luoyiActivePlayerId: string | null;
   /** 当前回合各角色是否选择发动【裸衣】。 */
   luoyiChosenInTurnByPlayer: Record<string, boolean>;
+  /** 当前回合各角色为【突袭】预选的目标列表（0~2名）。 */
+  tuxiChosenTargetsByPlayer: Record<string, string[]>;
   /** 当前回合各角色通过【仁德】给出的手牌数量。 */
   rendeGivenInTurnByPlayer: Record<string, number>;
   /** 当前回合各角色是否已通过【仁德】触发回复。 */
@@ -232,6 +236,10 @@ export interface GameState {
   responsePreferenceByPlayer: Record<string, ResponsePreference>;
   /** 当前回合各角色的响应决策队列。 */
   responseDecisionQueueByPlayer: Record<string, Partial<Record<ResponseKind, boolean[]>>>;
+  /** 各角色是否启用青龙偃月刀“闪后确认”模式。 */
+  bladeFollowUpPromptModeByPlayer: Record<string, boolean>;
+  /** 青龙偃月刀追击待确认状态。 */
+  pendingBladeFollowUp: { sourceId: string; targetId: string } | null;
   /** 获胜阵营，未结束时为空。 */
   winner: "lord-side" | "rebel-side" | "renegade" | null;
   /** 随机种子。 */

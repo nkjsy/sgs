@@ -142,6 +142,7 @@ export function createInitialGame(seed: number, options: CreateInitialGameOption
     skipPlayPhaseForCurrentTurn: false,
     luoyiActivePlayerId: null,
     luoyiChosenInTurnByPlayer: {},
+    tuxiChosenTargetsByPlayer: {},
     rendeGivenInTurnByPlayer: {},
     rendeRecoveredInTurnByPlayer: {},
     fanjianUsedInTurnByPlayer: {},
@@ -151,6 +152,8 @@ export function createInitialGame(seed: number, options: CreateInitialGameOption
     qingnangUsedInTurnByPlayer: {},
     responsePreferenceByPlayer: {},
     responseDecisionQueueByPlayer: {},
+    bladeFollowUpPromptModeByPlayer: {},
+    pendingBladeFollowUp: null,
     winner: null,
     seed,
     nullifyResponsePolicy: options.nullifyResponsePolicy ?? "camp-first",
@@ -233,6 +236,22 @@ export function stepPhase(state: GameState): void {
  */
 export function setLuoyiChoice(state: GameState, playerId: string, enabled: boolean): void {
   state.luoyiChosenInTurnByPlayer[playerId] = enabled;
+}
+
+export function setTuxiTargets(state: GameState, playerId: string, targetIds: string[]): void {
+  const actor = getPlayerById(state, playerId);
+  if (!actor || !actor.alive) {
+    return;
+  }
+
+  const validTargetIds = new Set(
+    getAliveOpponents(state, playerId)
+      .filter((candidate) => candidate.hand.length > 0)
+      .map((candidate) => candidate.id)
+  );
+
+  const uniqueTargets = Array.from(new Set(targetIds)).filter((targetId) => validTargetIds.has(targetId)).slice(0, 2);
+  state.tuxiChosenTargetsByPlayer[playerId] = uniqueTargets;
 }
 
 /**
@@ -397,13 +416,28 @@ export function getLegalActions(state: GameState): TurnAction[] {
       for (const target of getAliveOpponents(state, actor.id)) {
         const targetZones = getStealableZones(target);
         for (const zone of targetZones) {
-          actions.push({
-            type: "play-card",
-            actorId: actor.id,
-            cardId: card.id,
-            targetId: target.id,
-            targetZone: zone
-          });
+          if (zone === "hand") {
+            actions.push({
+              type: "play-card",
+              actorId: actor.id,
+              cardId: card.id,
+              targetId: target.id,
+              targetZone: zone
+            });
+            continue;
+          }
+
+          const zoneCards = getStealableCardsByZone(target, zone);
+          for (const zoneCard of zoneCards) {
+            actions.push({
+              type: "play-card",
+              actorId: actor.id,
+              cardId: card.id,
+              targetId: target.id,
+              targetZone: zone,
+              targetCardId: zoneCard.id
+            });
+          }
         }
       }
       continue;
@@ -418,13 +452,28 @@ export function getLegalActions(state: GameState): TurnAction[] {
       )) {
         const targetZones = getStealableZones(target);
         for (const zone of targetZones) {
-          actions.push({
-            type: "play-card",
-            actorId: actor.id,
-            cardId: card.id,
-            targetId: target.id,
-            targetZone: zone
-          });
+          if (zone === "hand") {
+            actions.push({
+              type: "play-card",
+              actorId: actor.id,
+              cardId: card.id,
+              targetId: target.id,
+              targetZone: zone
+            });
+            continue;
+          }
+
+          const zoneCards = getStealableCardsByZone(target, zone);
+          for (const zoneCard of zoneCards) {
+            actions.push({
+              type: "play-card",
+              actorId: actor.id,
+              cardId: card.id,
+              targetId: target.id,
+              targetZone: zone,
+              targetCardId: zoneCard.id
+            });
+          }
         }
       }
       continue;
@@ -633,6 +682,40 @@ export function queueResponseDecision(state: GameState, playerId: string, kind: 
   state.responseDecisionQueueByPlayer[playerId] = currentQueues;
 }
 
+export function setBladeFollowUpPromptMode(state: GameState, playerId: string, enabled: boolean): void {
+  state.bladeFollowUpPromptModeByPlayer[playerId] = enabled;
+}
+
+export function resolvePendingBladeFollowUp(state: GameState, enabled: boolean): void {
+  const pending = state.pendingBladeFollowUp;
+  if (!pending) {
+    return;
+  }
+
+  state.pendingBladeFollowUp = null;
+  if (!enabled) {
+    return;
+  }
+
+  const source = getPlayerById(state, pending.sourceId);
+  const target = getPlayerById(state, pending.targetId);
+  if (!source || !target || !source.alive || !target.alive) {
+    return;
+  }
+
+  if (source.equipment.weapon?.kind !== "weapon_blade") {
+    return;
+  }
+
+  const followSlash = consumeSlashLikeCard(state, source, "青龙偃月刀");
+  if (!followSlash) {
+    return;
+  }
+
+  pushEvent(state, "equip", `${source.name} 发动青龙偃月刀，对 ${target.name} 追加使用一张杀`);
+  resolveSlashOnTarget(state, source, target, followSlash, "青龙偃月刀追击的杀");
+}
+
 export function canRespondWithSlash(state: GameState, playerId: string): boolean {
   const player = getPlayerById(state, playerId);
   if (!player || !player.alive) {
@@ -757,7 +840,16 @@ function resolveDrawPhase(state: GameState, player: PlayerState): void {
   }
 
   if (hasSkill(state, player.id, STANDARD_SKILL_IDS.zhangliaoTuxi)) {
-    const targets = getAliveOpponents(state, player.id).filter((candidate) => candidate.hand.length > 0).slice(0, 2);
+    const validTargets = getAliveOpponents(state, player.id).filter((candidate) => candidate.hand.length > 0);
+    const chosenTargetIds = state.tuxiChosenTargetsByPlayer[player.id];
+    const targets = (chosenTargetIds
+      ? chosenTargetIds
+          .map((targetId) => validTargets.find((candidate) => candidate.id === targetId))
+          .filter((target): target is PlayerState => Boolean(target))
+      : player.isAi
+        ? validTargets.slice(0, 2)
+        : [])
+      .slice(0, 2);
     for (const target of targets) {
       if (drawCount <= 0) {
         break;
@@ -1035,7 +1127,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
       action.targetZone && availableZones.includes(action.targetZone)
         ? action.targetZone
         : availableZones[0];
-    const movedCard = selectedZone ? takeCardFromZone(state, target, selectedZone) : undefined;
+    const movedCard = selectedZone ? takeCardFromZone(state, target, selectedZone, action.targetCardId) : undefined;
     if (!selectedZone || !movedCard) {
       state.discard.push(card);
       return;
@@ -1337,14 +1429,23 @@ function resolveSlashOnTarget(
       }
 
       if (source.equipment.weapon?.kind === "weapon_blade" && allowsResponse(state, source.id, "blade-follow-up")) {
-        const followSlash = consumeSlashLikeCard(state, source, "青龙偃月刀");
-        if (followSlash) {
-          pushEvent(state, "equip", `${source.name} 发动青龙偃月刀，对 ${target.name} 追加使用一张杀`);
-          resolveSlashOnTarget(state, source, target, followSlash, "青龙偃月刀追击的杀");
-          if (shouldDiscardSlash) {
-            discardCardUnlessObtainedByJianxiong(state, slashCard);
+        const manualPromptMode = state.bladeFollowUpPromptModeByPlayer[source.id] === true;
+        if (!manualPromptMode) {
+          const followSlash = consumeSlashLikeCard(state, source, "青龙偃月刀");
+          if (followSlash) {
+            pushEvent(state, "equip", `${source.name} 发动青龙偃月刀，对 ${target.name} 追加使用一张杀`);
+            resolveSlashOnTarget(state, source, target, followSlash, "青龙偃月刀追击的杀");
+            if (shouldDiscardSlash) {
+              discardCardUnlessObtainedByJianxiong(state, slashCard);
+            }
+            return;
           }
-          return;
+        } else if (canProvideSlashLike(state, source, true)) {
+          state.pendingBladeFollowUp = {
+            sourceId: source.id,
+            targetId: target.id
+          };
+          pushEvent(state, "equip", `${target.name} 打出闪后，${source.name} 可发动青龙偃月刀追击`);
         }
       }
 
@@ -1395,7 +1496,7 @@ function tryApplyLiuliRedirection(
   const candidates = getAliveOpponents(state, source.id).filter(
     (candidate) =>
       candidate.id !== target.id &&
-      isInAttackRange(state, source.id, candidate.id) &&
+      isInAttackRange(state, target.id, candidate.id) &&
       canBeTargetedBySlashOrDuel(state, candidate)
   );
 
@@ -1531,6 +1632,31 @@ function getStealableZones(target: PlayerState): StealableZone[] {
   return zones;
 }
 
+function getStealableCardsByZone(target: PlayerState, zone: StealableZone): Card[] {
+  if (zone === "hand") {
+    return [...target.hand];
+  }
+
+  if (zone === "judgment") {
+    return [...target.judgmentZone.delayedTricks];
+  }
+
+  const cards: Card[] = [];
+  if (target.equipment.weapon) {
+    cards.push(target.equipment.weapon);
+  }
+  if (target.equipment.armor) {
+    cards.push(target.equipment.armor);
+  }
+  if (target.equipment.horsePlus) {
+    cards.push(target.equipment.horsePlus);
+  }
+  if (target.equipment.horseMinus) {
+    cards.push(target.equipment.horseMinus);
+  }
+  return cards;
+}
+
 function getStealableZoneLabelZh(zone: StealableZone): string {
   if (zone === "equipment") {
     return "装备区";
@@ -1543,7 +1669,7 @@ function getStealableZoneLabelZh(zone: StealableZone): string {
   return "手牌";
 }
 
-function takeCardFromZone(state: GameState, target: PlayerState, zone: StealableZone): Card | undefined {
+function takeCardFromZone(state: GameState, target: PlayerState, zone: StealableZone, preferredCardId?: string): Card | undefined {
   if (zone === "hand") {
     if (target.hand.length === 0) {
       return undefined;
@@ -1559,7 +1685,44 @@ function takeCardFromZone(state: GameState, target: PlayerState, zone: Stealable
       return undefined;
     }
 
+    if (preferredCardId) {
+      const preferredIndex = target.judgmentZone.delayedTricks.findIndex((card) => card.id === preferredCardId);
+      if (preferredIndex >= 0) {
+        return target.judgmentZone.delayedTricks.splice(preferredIndex, 1)[0];
+      }
+    }
+
     return target.judgmentZone.delayedTricks.shift() as Card;
+  }
+
+  if (preferredCardId) {
+    if (target.equipment.weapon?.id === preferredCardId) {
+      const card = target.equipment.weapon;
+      target.equipment.weapon = null;
+      tryTriggerXiaojiAfterEquipmentLoss(state, target, 1);
+      return card;
+    }
+
+    if (target.equipment.armor?.id === preferredCardId) {
+      const card = target.equipment.armor;
+      target.equipment.armor = null;
+      tryTriggerXiaojiAfterEquipmentLoss(state, target, 1);
+      return card;
+    }
+
+    if (target.equipment.horsePlus?.id === preferredCardId) {
+      const card = target.equipment.horsePlus;
+      target.equipment.horsePlus = null;
+      tryTriggerXiaojiAfterEquipmentLoss(state, target, 1);
+      return card;
+    }
+
+    if (target.equipment.horseMinus?.id === preferredCardId) {
+      const card = target.equipment.horseMinus;
+      target.equipment.horseMinus = null;
+      tryTriggerXiaojiAfterEquipmentLoss(state, target, 1);
+      return card;
+    }
   }
 
   if (target.equipment.weapon) {
@@ -1863,6 +2026,7 @@ function evaluateHarvestCard(player: PlayerState, card: Card): number {
 function resolveJudgePhase(state: GameState, playerId: string): void {
   const player = requireAlivePlayer(state, playerId);
   if (player.judgmentZone.delayedTricks.length === 0) {
+    pushEvent(state, "judge", `${player.name} 判定阶段无延时锦囊，跳过判定`);
     return;
   }
 
@@ -2010,7 +2174,11 @@ function drawJudgmentCard(state: GameState, player: PlayerState): Card | undefin
     const replacement = guicaiOwner.hand.shift() as Card;
     state.discard.push(judgeCard);
     judgeCard = replacement;
-    pushEvent(state, "skill", `${guicaiOwner.name} 发动鬼才，替换了 ${player.name} 的判定牌`);
+    pushEvent(
+      state,
+      "skill",
+      `${guicaiOwner.name} 发动鬼才，将 ${player.name} 的判定牌 ${drawnCard.id}（${getCardSuit(drawnCard)}${getCardPoint(drawnCard)}）替换为 ${replacement.id}（${getCardSuit(replacement)}${getCardPoint(replacement)}）`
+    );
   }
 
   if (!judgeCard) {
@@ -3270,6 +3438,7 @@ function advanceTurn(state: GameState): void {
   state.skipPlayPhaseForCurrentTurn = false;
   state.luoyiActivePlayerId = null;
   state.luoyiChosenInTurnByPlayer = {};
+  state.tuxiChosenTargetsByPlayer = {};
   state.rendeGivenInTurnByPlayer = {};
   state.rendeRecoveredInTurnByPlayer = {};
   state.fanjianUsedInTurnByPlayer = {};
@@ -3277,6 +3446,7 @@ function advanceTurn(state: GameState): void {
   state.jieyinUsedInTurnByPlayer = {};
   state.lijianUsedInTurnByPlayer = {};
   state.qingnangUsedInTurnByPlayer = {};
+  state.pendingBladeFollowUp = null;
   state.turnCount += 1;
   pushEvent(state, "turn", `轮到 ${next.name} 的回合`);
   pushEvent(state, "phase", `${next.name} 进入判定阶段`);

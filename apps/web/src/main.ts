@@ -12,8 +12,11 @@ import {
   getPlayerKingdomById,
   getLegalActions,
   queueResponseDecision,
+  resolvePendingBladeFollowUp,
+  setBladeFollowUpPromptMode,
   setResponsePreference,
   setLuoyiChoice,
+  setTuxiTargets,
   stepPhase,
   type Card,
   type GameState,
@@ -43,6 +46,8 @@ type PendingHumanResponse = {
   kind: ResponseKind;
   message: string;
   action: TurnAction;
+  previewCardEventMessage?: string;
+  allowRespond?: boolean;
 };
 
 const ASSET_BASE = `${import.meta.env.BASE_URL}assets`;
@@ -463,12 +468,16 @@ const CARD_KIND_LABEL_ZH: Record<string, string> = {
 
 const foundApp = document.querySelector<HTMLDivElement>("#app");
 
+function createRuntimeSeed(): number {
+  return (Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0;
+}
+
 let rosterMode: RosterMode = "pick-human";
 let preferredHumanGeneralId = "liubei";
 let identitySetupMode: IdentitySetupMode = "fixed-standard";
 let preferredHumanIdentity: PlayerState["identity"] = "lord";
 let playerGeneralIdByPlayerId: Record<string, string> = {};
-let game = createGame(Date.now());
+let game = createGame(createRuntimeSeed());
 let gameStarted = false;
 let autoMode = true;
 let autoplayTimer: number | null = null;
@@ -476,9 +485,10 @@ let previewTargetIds: string[] = [];
 let selectedCardId: string | null = null;
 let pendingPrimaryTargetId: string | null = null;
 let pendingZoneChoiceActions: PlayCardAction[] = [];
+let pendingZoneCardChoiceActions: PlayCardAction[] = [];
 let activeSkillModeId: string | null = null;
 let pendingHumanResponse: PendingHumanResponse | null = null;
-let pendingNullifyDecisionCount = 0;
+let selectedTuxiTargetIds: string[] = [];
 
 if (!foundApp) {
   showFatalError(new Error("页面缺少 #app 容器节点"));
@@ -525,6 +535,10 @@ function escapeHtml(value: string): string {
 
 function createGame(seed: number): Game {
   const state = createInitialGame(seed);
+  const human = state.players[0];
+  if (human) {
+    setBladeFollowUpPromptMode(state, human.id, true);
+  }
   applyIdentitySetup(state, seed);
   alignFirstTurnToLord(state);
   playerGeneralIdByPlayerId = setupRoster(state, seed);
@@ -536,12 +550,13 @@ function resetUiSelections(): void {
   selectedCardId = null;
   pendingPrimaryTargetId = null;
   pendingZoneChoiceActions = [];
+  pendingZoneCardChoiceActions = [];
   activeSkillModeId = null;
   pendingHumanResponse = null;
-  pendingNullifyDecisionCount = 0;
+  selectedTuxiTargetIds = [];
 }
 
-function startNewGame(seed = Date.now()): void {
+function startNewGame(seed = createRuntimeSeed()): void {
   game = createGame(seed);
   resetUiSelections();
 }
@@ -711,6 +726,47 @@ function isPendingLuoyiChoice(state: Game): boolean {
   return state.luoyiChosenInTurnByPlayer[actor.id] === undefined;
 }
 
+function getPendingTuxiChoice(state: Game): { actor: PlayerState; candidates: PlayerState[] } | null {
+  if (state.winner || state.phase !== "draw") {
+    return null;
+  }
+
+  const actor = state.players.find((player) => player.id === state.currentPlayerId);
+  if (!actor || !actor.alive || actor.isAi) {
+    return null;
+  }
+
+  const skillIds = state.skillSystem.playerSkills[actor.id] ?? [];
+  if (!skillIds.includes(STANDARD_SKILL_IDS.zhangliaoTuxi)) {
+    return null;
+  }
+
+  if (state.tuxiChosenTargetsByPlayer[actor.id] !== undefined) {
+    return null;
+  }
+
+  const candidates = state.players.filter((player) => player.alive && player.id !== actor.id && player.hand.length > 0);
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  return { actor, candidates };
+}
+
+function renderTuxiChoicePanel(pending: { actor: PlayerState; candidates: PlayerState[] }): string {
+  const selected = pending.candidates.filter((candidate) => selectedTuxiTargetIds.includes(candidate.id));
+  const selectedLabel = selected.length > 0 ? selected.map((candidate) => candidate.name).join("、") : "未选择";
+
+  return `
+    <div class="status">${pending.actor.name} 可发动【突袭】：请直接点击武将牌选择 1~2 名目标。</div>
+    <div class="status">已选目标：${selectedLabel}</div>
+    <div class="response-actions">
+      <button data-role="tuxi-confirm" ${selected.length > 0 ? "" : "disabled"}>确认发动（${selected.length}/2）</button>
+      <button data-role="tuxi-skip">不发动，正常摸牌</button>
+    </div>
+  `;
+}
+
 function renderLuoyiChoicePanel(state: Game): string {
   const actor = state.players.find((player) => player.id === state.currentPlayerId);
   if (!actor || !isPendingLuoyiChoice(state)) {
@@ -743,19 +799,99 @@ function renderHumanResponsePanel(pending: PendingHumanResponse): string {
           : "不响应";
 
   if (pending.kind === "nullify") {
+    const allowRespond = pending.allowRespond !== false;
     return `
       <div class="status">${pending.message}</div>
-      <button data-role="response-choice" data-enabled="1">本次响应</button>
-      <button data-role="response-choice" data-enabled="0">本次不响应</button>
-      <button data-role="response-submit">开始结算</button>
+      <div class="response-actions">
+      <button data-role="response-choice" data-enabled="1" ${allowRespond ? "" : "disabled"}>响应</button>
+      <button data-role="response-choice" data-enabled="0">不响应</button>
+      </div>
     `;
   }
 
+  const allowRespond = pending.allowRespond !== false;
+
   return `
     <div class="status">${pending.message}</div>
-    <button data-role="response-choice" data-enabled="1">${allowLabel}</button>
+    <div class="response-actions">
+    <button data-role="response-choice" data-enabled="1" ${allowRespond ? "" : "disabled"}>${allowLabel}</button>
     <button data-role="response-choice" data-enabled="0">${rejectLabel}</button>
+    </div>
   `;
+}
+
+function getFollowupResponseAfterNullify(state: Game, pending: PendingHumanResponse): PendingHumanResponse | null {
+  if (pending.action.type !== "play-card") {
+    return null;
+  }
+
+  const human = getHumanPlayer(state);
+  const kind = inferActionCardKindForResponse(state, pending.action);
+  if (!kind) {
+    return null;
+  }
+
+  if (kind === "duel" && pending.action.targetId === human.id) {
+    return {
+      kind: "slash",
+      message: "是否打出【杀】响应【决斗】？",
+      action: pending.action,
+      previewCardEventMessage: pending.previewCardEventMessage,
+      allowRespond: canRespondWithSlash(state, human.id)
+    };
+  }
+
+  if (kind === "barbarian") {
+    return {
+      kind: "slash",
+      message: "是否打出【杀】响应【南蛮入侵】？",
+      action: pending.action,
+      previewCardEventMessage: pending.previewCardEventMessage,
+      allowRespond: canRespondWithSlash(state, human.id)
+    };
+  }
+
+  if (kind === "archery") {
+    return {
+      kind: "dodge",
+      message: "是否打出【闪】响应【万箭齐发】？",
+      action: pending.action,
+      previewCardEventMessage: pending.previewCardEventMessage,
+      allowRespond: canRespondWithDodge(state, human.id)
+    };
+  }
+
+  return null;
+}
+
+function buildCardEventPreviewMessage(state: Game, action: TurnAction, inferredKind: string): string | null {
+  if (action.type !== "play-card") {
+    return null;
+  }
+
+  const actor = state.players.find((player) => player.id === action.actorId);
+  if (!actor) {
+    return null;
+  }
+
+  const target = action.targetId ? state.players.find((player) => player.id === action.targetId) : null;
+  if (inferredKind === "duel" && target) {
+    return `${actor.name} 对 ${target.name} 使用决斗`;
+  }
+
+  if (inferredKind === "barbarian") {
+    return `${actor.name} 使用南蛮入侵`;
+  }
+
+  if (inferredKind === "archery") {
+    return `${actor.name} 使用万箭齐发`;
+  }
+
+  return null;
+}
+
+function mayHaveAnyNullifyResponder(state: Game): boolean {
+  return state.players.some((player) => player.alive && canRespondWithNullify(state, player.id));
 }
 
 function render(): void {
@@ -814,8 +950,16 @@ function render(): void {
   }
 
   const actor = game.players.find((player) => player.id === game.currentPlayerId);
+  const pendingTuxiChoice = getPendingTuxiChoice(game);
   const pendingLuoyiChoice = isPendingLuoyiChoice(game);
   const pendingResponse = pendingHumanResponse;
+
+  if (pendingTuxiChoice) {
+    const validIds = new Set(pendingTuxiChoice.candidates.map((candidate) => candidate.id));
+    selectedTuxiTargetIds = selectedTuxiTargetIds.filter((targetId) => validIds.has(targetId)).slice(0, 2);
+  } else {
+    selectedTuxiTargetIds = [];
+  }
   const allLegalActions =
     !game.winner && actor && !actor.isAi && game.phase === "play"
       ? getLegalActions(game).filter((action) => action.actorId === actor.id)
@@ -842,6 +986,7 @@ function render(): void {
     selectedCardId = null;
     pendingPrimaryTargetId = null;
     pendingZoneChoiceActions = [];
+    pendingZoneCardChoiceActions = [];
   }
 
   if (!selectedCardId && pendingPrimaryTargetId) {
@@ -850,6 +995,9 @@ function render(): void {
 
   if (!selectedCardId && pendingZoneChoiceActions.length > 0) {
     pendingZoneChoiceActions = [];
+  }
+  if (!selectedCardId && pendingZoneCardChoiceActions.length > 0) {
+    pendingZoneCardChoiceActions = [];
   }
 
   const playableActions = legalActions.filter((action) => action.type === "play-card");
@@ -877,13 +1025,16 @@ function render(): void {
           Boolean(action.secondaryTargetId)
       )
     : selectedCardActions.filter((action) => action.type === "play-card" && Boolean(action.targetId));
-  const selectableTargetIds = Array.from(
+  let selectableTargetIds = Array.from(
     new Set(
       directTargetActionCandidates
         .map((action) => (pendingPrimaryTargetId ? action.secondaryTargetId : action.targetId))
         .filter((targetId): targetId is string => Boolean(targetId))
     )
   );
+  if (pendingTuxiChoice) {
+    selectableTargetIds = pendingTuxiChoice.candidates.map((candidate) => candidate.id);
+  }
 
   const endPlayAction = legalActions.find((action) => action.type === "end-play-phase") ?? null;
   const humanPlayer = getHumanPlayer(game);
@@ -906,22 +1057,44 @@ function render(): void {
 
   app.innerHTML = `
     <main class="battle-layout">
-      <section class="panel battle-topbar">
-        <div class="status">回合 ${game.turnCount} · 当前 ${actor?.name ?? "未知"} · 阶段 ${PHASE_LABEL[game.phase]} · 模式 ${activeSkillModeId ? `技能(${getSkillModeLabel(activeSkillModeId)})` : "普通出牌"}</div>
-        <div class="setup-controls">
-          <button data-role="new-game">重新开局</button>
-          <button data-role="back-to-setup">返回设置</button>
-          <button data-role="auto-toggle">${autoMode ? "停止自动推进" : "自动推进"}</button>
-          <button data-role="step">单步推进</button>
-        </div>
-      </section>
-
       <section class="panel battle-table">
         <div class="player-list official-table">
-          ${renderPlayers(game, previewTargetIds, selectableTargetIds, pendingPrimaryTargetId)}
-          <section class="center-log">
-            <div class="center-log-title">事件日志</div>
-            <ol class="log-list">${renderEvents(game)}</ol>
+          <div class="table-corner-info status">回合 ${game.turnCount} · 当前 ${actor?.name ?? "未知"} · 阶段 ${PHASE_LABEL[game.phase]} · 模式 ${activeSkillModeId ? `技能(${getSkillModeLabel(activeSkillModeId)})` : "普通出牌"}</div>
+          <div class="table-corner-actions">
+            <button data-role="new-game">重新开局</button>
+            <button data-role="back-to-setup">返回设置</button>
+            <button data-role="auto-toggle">${autoMode ? "停止自动推进" : "自动推进"}</button>
+            <button data-role="step">单步推进</button>
+          </div>
+          ${renderPlayers(
+            game,
+            pendingTuxiChoice
+              ? Array.from(new Set([...previewTargetIds, ...selectedTuxiTargetIds]))
+              : previewTargetIds,
+            selectableTargetIds,
+            pendingPrimaryTargetId
+          )}
+          <section class="center-panels">
+            <section class="center-log">
+              <div class="center-log-title">事件日志</div>
+              <ol class="log-list">${renderEvents(game, pendingResponse?.previewCardEventMessage)}</ol>
+            </section>
+            ${pendingResponse
+              ? `<section class="center-response">
+              <div class="center-log-title">响应窗口</div>
+              <div class="action-list response-inline">${renderHumanResponsePanel(pendingResponse)}</div>
+            </section>`
+              : pendingTuxiChoice
+                ? `<section class="center-response">
+              <div class="center-log-title">摸牌阶段决策</div>
+              <div class="action-list response-inline">${renderTuxiChoicePanel(pendingTuxiChoice)}</div>
+            </section>`
+                : pendingLuoyiChoice
+                  ? `<section class="center-response">
+              <div class="center-log-title">摸牌阶段决策</div>
+              <div class="action-list response-inline">${renderLuoyiChoicePanel(game)}</div>
+            </section>`
+                  : ""}
           </section>
         </div>
       </section>
@@ -938,35 +1111,22 @@ function render(): void {
             </div>
           </div>
           <div class="self-status-panels">
-            <div class="status">装备区：${humanEquipmentSummary}</div>
-            <div class="status">判定区：${humanJudgmentSummary}</div>
-            <div class="self-skill-toolbar">${renderSkillToolbar(game, allLegalActions, activeSkillModeId)}</div>
-            ${pendingLuoyiChoice
-              ? `<section>
-            <h2>摸牌阶段决策</h2>
-            <div class="action-list">${renderLuoyiChoicePanel(game)}</div>
-          </section>`
-              : ""}
-            ${pendingResponse
-              ? `<section>
-            <h2>响应窗口</h2>
-            <div class="action-list">${renderHumanResponsePanel(pendingResponse)}</div>
-          </section>`
-              : ""}
+            <section class="self-hand-panel">
+              <div class="self-hand-main">
+                ${renderZoneChoiceActions(pendingZoneChoiceActions)}
+                ${renderZoneCardChoiceActions(pendingZoneCardChoiceActions)}
+                <div class="hand-list">${renderHand(humanHand, legalActions, selectedCardId)}</div>
+              </div>
+              <aside class="self-side-status">
+                <div class="hand-actions">
+                  ${renderSkillToolbar(game, allLegalActions, activeSkillModeId)}
+                  ${endPlayAction ? '<button data-role="end-play-inline">结束出牌阶段</button>' : ""}
+                </div>
+                <div class="status">装备区：${humanEquipmentSummary}</div>
+                <div class="status">判定区：${humanJudgmentSummary}</div>
+              </aside>
+            </section>
           </div>
-        </div>
-
-        <h2>你的手牌</h2>
-        <div class="status hand-hint">${getTargetSelectionHint(
-          game,
-          selectedCardActions,
-          pendingPrimaryTargetId,
-          pendingZoneChoiceActions
-        )}</div>
-        ${renderZoneChoiceActions(pendingZoneChoiceActions)}
-        <div class="hand-list">${renderHand(humanHand, legalActions, selectedCardId)}</div>
-        <div class="hand-actions">
-          ${endPlayAction ? '<button data-role="end-play-inline">结束出牌阶段</button>' : ""}
         </div>
       </section>
     </main>
@@ -975,11 +1135,90 @@ function render(): void {
   bindGlobalButtons();
   bindLuoyiChoiceButtons();
   bindHumanResponseButtons();
+  bindTuxiChoiceButtons();
   bindSkillButtons(allLegalActions);
   bindHandButtons(legalActions);
   bindPlayerTargetButtons(selectedCardActions);
   bindZoneChoiceButtons();
+  bindZoneCardChoiceButtons();
   bindInlineEndPlayButton(endPlayAction);
+  adjustSkillPopoverDirectionByViewport();
+  scrollEventLogToLatest();
+}
+
+function adjustSkillPopoverDirectionByViewport(): void {
+  const seats = app.querySelectorAll<HTMLDivElement>(".player-seat");
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  const edgePadding = 10;
+  const gap = 6;
+
+  seats.forEach((seat) => {
+    const row = seat.querySelector<HTMLDivElement>(".player-row");
+    const popover = seat.querySelector<HTMLDivElement>(".player-skill-popover");
+    if (!row || !popover) {
+      return;
+    }
+
+    popover.classList.remove("player-popover-left", "player-popover-right", "player-popover-up", "player-popover-down");
+
+    const rowRect = row.getBoundingClientRect();
+    const seatLeft = Number(popover.dataset.seatLeft ?? "50");
+    const seatTop = Number(popover.dataset.seatTop ?? "0");
+    const isTopRowSeat = popover.dataset.topRow === "1";
+    const preferHorizontal = isTopRowSeat && seatTop <= 45;
+    const popoverWidth = Math.max(220, popover.getBoundingClientRect().width || 220);
+    const popoverHeight = Math.max(160, popover.getBoundingClientRect().height || 160);
+    const fitsRight = rowRect.right + gap + popoverWidth <= viewportWidth - edgePadding;
+    const fitsLeft = rowRect.left - gap - popoverWidth >= edgePadding;
+    const fitsUp = rowRect.top - gap - popoverHeight >= edgePadding;
+    const fitsDown = rowRect.bottom + gap + popoverHeight <= viewportHeight - edgePadding;
+
+    if (isTopRowSeat) {
+      popover.classList.add("player-popover-left");
+      return;
+    }
+
+    if (!preferHorizontal) {
+      if (!fitsUp && fitsDown) {
+        popover.classList.add("player-popover-down");
+        return;
+      }
+
+      if (!fitsDown && fitsUp) {
+        popover.classList.add("player-popover-up");
+        return;
+      }
+
+      popover.classList.add(fitsUp ? "player-popover-up" : "player-popover-down");
+      return;
+    }
+
+    if (!fitsRight && fitsLeft) {
+      popover.classList.add("player-popover-left");
+      return;
+    }
+
+    if (!fitsLeft && fitsRight) {
+      popover.classList.add("player-popover-right");
+      return;
+    }
+
+    if (seatLeft < 50) {
+      popover.classList.add("player-popover-left");
+    } else {
+      popover.classList.add("player-popover-right");
+    }
+  });
+}
+
+function scrollEventLogToLatest(): void {
+  const logList = app.querySelector<HTMLOListElement>(".center-log .log-list");
+  if (!logList) {
+    return;
+  }
+
+  logList.scrollTop = logList.scrollHeight;
 }
 
 function getTargetSelectionHint(
@@ -1039,6 +1278,28 @@ function renderZoneChoiceActions(actions: PlayCardAction[]): string {
     .join("");
 
   return `<div class="zone-choice-list">${buttons}</div>`;
+}
+
+function renderZoneCardChoiceActions(actions: PlayCardAction[]): string {
+  if (actions.length === 0) {
+    return "";
+  }
+
+  const buttons = actions
+    .map(
+      (action, index) =>
+        `<button data-role="zone-card-choice" data-index="${index}" data-card-id="${action.targetCardId ?? ""}">${formatTargetCardChoiceLabel(
+          action
+        )}</button>`
+    )
+    .join("");
+
+  return `<div class="zone-choice-list">${buttons}</div>`;
+}
+
+function formatTargetCardChoiceLabel(action: PlayCardAction): string {
+  const zoneLabel = action.targetZone === "judgment" ? "判定" : action.targetZone === "equipment" ? "装备" : "手牌";
+  return `${zoneLabel}：${action.targetCardId ?? "未知牌"}`;
 }
 
 function filterActionsBySkillMode(actions: TurnAction[], modeId: string | null): TurnAction[] {
@@ -1156,22 +1417,64 @@ function renderSkillToolbar(state: Game, allLegalActions: TurnAction[], currentM
   return manualSkills || '<span class="status">当前无主动技可发动</span>';
 }
 
+function renderSelfSkillToolbar(state: Game, allLegalActions: TurnAction[], currentModeId: string | null): string {
+  const human = getHumanPlayer(state);
+  const skillIds = state.skillSystem.playerSkills[human.id] ?? [];
+  if (skillIds.length === 0) {
+    return '<span class="status">当前无可用技能</span>';
+  }
+
+  return skillIds
+    .map((skillId) => {
+      const config = SKILL_UI_CONFIG[skillId] ?? {
+        name: SKILL_NAME_ZH[skillId] ?? skillId,
+        description: "规则层已实现该技能，当前为通用说明展示。",
+        trigger: "response" as const,
+        modeId: null
+      };
+
+      const available =
+        config.modeId !== null && allLegalActions.some((action) => getActionModeId(action) === config.modeId);
+
+      if (config.trigger === "manual" && config.modeId !== null) {
+        return `<button class="self-skill-button manual" data-role="skill-toggle" data-mode-id="${config.modeId}" title="${config.description}" ${available ? "" : "disabled"}>${
+          currentModeId === config.modeId ? `取消${config.name}` : config.name
+        }</button>`;
+      }
+
+      const triggerLabel = config.trigger === "auto" ? "自动" : "响应";
+      return `<button class="self-skill-button passive" type="button" title="${config.description}" disabled>${config.name}·${triggerLabel}</button>`;
+    })
+    .join("");
+}
+
+function isSelfImmediateCastCard(kind: string | null): boolean {
+  return kind === "ex_nihilo" || kind === "lightning";
+}
+
 function getOpponentSeatPosition(index: number, seatCount: number): { left: number; top: number } {
+  if (seatCount <= 0) {
+    return { left: 50, top: 50 };
+  }
+
   if (seatCount === 4) {
     const fixed = [
-      { left: 14, top: 58 },
-      { left: 34, top: 28 },
-      { left: 66, top: 28 },
-      { left: 86, top: 58 }
+      { left: 8, top: 58 },
+      { left: 28, top: 28 },
+      { left: 72, top: 28 },
+      { left: 92, top: 58 }
     ];
-    return fixed[index] ?? fixed[fixed.length - 1]!;
+    return fixed[index] ?? fixed[0]!;
   }
 
   const angle = 180 + (180 / Math.max(seatCount - 1, 1)) * index;
   const rad = (angle * Math.PI) / 180;
+  const horizontalRadius = seatCount >= 6 ? 46 : 44;
+  const verticalRadius = seatCount >= 6 ? 38 : 36;
+  const computedLeft = 50 + horizontalRadius * Math.cos(rad);
   return {
-    left: 50 + 36 * Math.cos(rad),
-    top: 54 + 34 * Math.sin(rad)
+    left: Math.max(7, Math.min(93, computedLeft)),
+    top: 54 + verticalRadius * Math.sin(rad)
   };
 }
 
@@ -1183,9 +1486,10 @@ function renderPlayers(
 ): string {
   const viewerId = getHumanPlayer(state).id;
   const viewerSeatIndex = state.players.findIndex((player) => player.id === viewerId);
+  const playerCount = state.players.length;
   const orderedPlayers =
     viewerSeatIndex >= 0
-      ? state.players.map((_, offset) => state.players[(viewerSeatIndex + offset) % state.players.length]!)
+      ? state.players.map((_, offset) => state.players[(viewerSeatIndex - offset + playerCount) % playerCount]!)
       : state.players;
   const opponents = orderedPlayers.filter((player) => player.id !== viewerId);
   const seatCount = opponents.length;
@@ -1225,6 +1529,10 @@ function renderPlayers(
         .filter(Boolean)
         .join(" ");
       const { left, top } = getOpponentSeatPosition(index, seatCount);
+      const adjustedTop = Math.min(88, top + 6);
+      const isTopRowSeat = adjustedTop <= 45;
+      const skillPopoverClass = isTopRowSeat ? "player-popover-left" : "player-popover-up";
+      const infoPopoverClass = isTopRowSeat ? "player-popover-right" : "player-popover-bottom";
       const realSeatIndex = state.players.findIndex((slot) => slot.id === player.id);
       const seatLabel = realSeatIndex >= 0 ? `#${realSeatIndex + 1}` : "未知";
       const seatDistance = getSeatDistance(state, viewerId, player.id);
@@ -1232,20 +1540,26 @@ function renderPlayers(
       const detailTitle = `装备区：${equipmentSummary}｜判定区：${judgmentSummary}`;
 
       return `
-        <div class="player-seat" style="left:${left}%;top:${top}%">
+        <div class="player-seat" style="left:${left}%;top:${adjustedTop}%">
         <div class="${rowClass}" data-player-id="${player.id}" title="${detailTitle}">
-          <img class="avatar" src="${ASSET_BASE}/generals/${mappedGeneralId}.png" alt="${player.name}" />
-          <div class="player-name">${player.name}</div>
-          <div class="player-core">${player.hp}/${player.maxHp} ♥ · 手牌 ${player.hand.length}</div>
+          <div class="player-main-row">
+            <img class="avatar ai-avatar" src="${ASSET_BASE}/generals/${mappedGeneralId}.png" alt="${player.name}" />
+            <div class="player-right-info">
+              <div class="player-name">${player.name}</div>
+              <div class="player-core">${player.hp}/${player.maxHp} ♥ · 手牌 ${player.hand.length}</div>
+              <div class="player-zone-line">装:${equipmentSummary}</div>
+              <div class="player-zone-line">判:${judgmentSummary}</div>
+            </div>
+          </div>
           <div class="player-tags">
             <span class="badge ${identityVisible ? "" : "hidden"}">${identityLabel}</span>
             <span class="badge ${player.alive ? "" : "dead"}">${tag}</span>
           </div>
-          <div class="player-popover player-popover-right">
+          <div class="player-popover player-skill-popover ${skillPopoverClass}" data-seat-left="${left}" data-seat-top="${adjustedTop}" data-top-row="${isTopRowSeat ? "1" : "0"}">
             <div class="player-popover-title">技能</div>
             <div class="player-skill-list">${skillItems}</div>
           </div>
-          <div class="player-popover player-popover-bottom">
+          <div class="player-popover ${infoPopoverClass}">
             <div class="player-popover-title">${player.name}</div>
             <div>座位 ${seatLabel} · 距离 ${distanceLabel}</div>
             <div>体力 ${player.hp}/${player.maxHp} · 手牌 ${player.hand.length}</div>
@@ -1398,15 +1712,21 @@ function getActionTargetLabel(state: Game, action: TurnAction): string {
   return "无指定目标";
 }
 
-function renderEvents(state: Game): string {
+function renderEvents(state: Game, pendingPreviewMessage: string | undefined = undefined): string {
   const start = Math.max(0, state.events.length - 160);
-  return state.events
+  const rendered = state.events
     .slice(start)
     .map((event) => {
       const style = EVENT_STYLE[event.type] ?? { tag: event.type.toUpperCase() };
       return `<li><span class="log-tag">[${style.tag}]</span>${localizeEventMessage(event.message)}</li>`;
     })
     .join("");
+
+  if (!pendingPreviewMessage) {
+    return rendered;
+  }
+
+  return `${rendered}<li><span class="log-tag">[${EVENT_STYLE.card.tag}]</span>${localizeEventMessage(pendingPreviewMessage)}</li>`;
 }
 
 function describeAction(state: Game, action: TurnAction): string {
@@ -1568,6 +1888,9 @@ function bindGlobalButtons(): void {
 
   identityModeSelect?.addEventListener("change", () => {
     identitySetupMode = identityModeSelect.value as IdentitySetupMode;
+    if (identitySetupMode === "random-all") {
+      rosterMode = "random-all";
+    }
     render();
     ensureAutoLoop();
   });
@@ -1585,7 +1908,7 @@ function bindGlobalButtons(): void {
   });
 
   randomHumanBtn?.addEventListener("click", () => {
-    const shuffled = shuffleWithSeed([...STANDARD_GENERAL_CHECKLIST], Date.now() ^ game.seed);
+    const shuffled = shuffleWithSeed([...STANDARD_GENERAL_CHECKLIST], createRuntimeSeed() ^ game.seed);
     preferredHumanGeneralId = shuffled[0]?.generalId ?? preferredHumanGeneralId;
     resetUiSelections();
     render();
@@ -1594,7 +1917,7 @@ function bindGlobalButtons(): void {
 
   startGameBtn?.addEventListener("click", () => {
     gameStarted = true;
-    startNewGame(Date.now());
+    startNewGame(createRuntimeSeed());
     render();
     ensureAutoLoop();
   });
@@ -1607,7 +1930,7 @@ function bindGlobalButtons(): void {
   });
 
   newGameBtn?.addEventListener("click", () => {
-    startNewGame(Date.now());
+    startNewGame(createRuntimeSeed());
     render();
     ensureAutoLoop();
   });
@@ -1683,6 +2006,38 @@ function bindLuoyiChoiceButtons(): void {
   });
 }
 
+function bindTuxiChoiceButtons(): void {
+  const confirmButton = app.querySelector<HTMLButtonElement>("button[data-role='tuxi-confirm']");
+  confirmButton?.addEventListener("click", () => {
+    const actor = game.players.find((player) => player.id === game.currentPlayerId);
+    if (!actor || selectedTuxiTargetIds.length === 0) {
+      return;
+    }
+
+    setTuxiTargets(game, actor.id, selectedTuxiTargetIds);
+    selectedTuxiTargetIds = [];
+    stepPhase(game);
+    runAutoUntilHumanChoice();
+    render();
+    ensureAutoLoop();
+  });
+
+  const skipButton = app.querySelector<HTMLButtonElement>("button[data-role='tuxi-skip']");
+  skipButton?.addEventListener("click", () => {
+    const actor = game.players.find((player) => player.id === game.currentPlayerId);
+    if (!actor) {
+      return;
+    }
+
+    setTuxiTargets(game, actor.id, []);
+    selectedTuxiTargetIds = [];
+    stepPhase(game);
+    runAutoUntilHumanChoice();
+    render();
+    ensureAutoLoop();
+  });
+}
+
 function bindHumanResponseButtons(): void {
   const buttons = app.querySelectorAll<HTMLButtonElement>("button[data-role='response-choice']");
   buttons.forEach((button) => {
@@ -1694,46 +2049,49 @@ function bindHumanResponseButtons(): void {
       const current = pendingHumanResponse;
       const human = getHumanPlayer(game);
       const enabled = button.dataset.enabled === "1";
+      if (enabled && current.allowRespond === false) {
+        return;
+      }
       if (current.kind === "nullify") {
         queueResponseDecision(game, human.id, "nullify", enabled);
-        pendingNullifyDecisionCount += 1;
-        const decisionLabel = enabled ? "响应" : "不响应";
-        pendingHumanResponse = {
-          ...current,
-          message: `已记录第 ${pendingNullifyDecisionCount} 次无懈选择：${decisionLabel}。继续设置下一次，或点击“开始结算”。`
-        };
+        if (!enabled) {
+          const followup = getFollowupResponseAfterNullify(game, current);
+          if (followup) {
+            pendingHumanResponse = followup;
+            render();
+            ensureAutoLoop();
+            return;
+          }
+        }
+        pendingHumanResponse = null;
+        setResponsePreference(game, human.id, "nullify", false);
+        applyAction(game, current.action);
+        runAutoUntilHumanChoice();
         render();
         ensureAutoLoop();
         return;
       }
 
       pendingHumanResponse = null;
-      pendingNullifyDecisionCount = 0;
       if (current.kind === "blade-follow-up") {
-        setResponsePreference(game, human.id, current.kind, enabled);
+        resolvePendingBladeFollowUp(game, enabled);
+        runAutoUntilHumanChoice();
+        render();
+        ensureAutoLoop();
+        return;
+      } else if (
+        current.kind === "slash" ||
+        current.kind === "dodge" ||
+        current.kind === "peach" ||
+        current.kind === "hujia" ||
+        current.kind === "jijiang"
+      ) {
+        queueResponseDecision(game, human.id, current.kind, enabled);
+        setResponsePreference(game, human.id, current.kind, false);
       } else if (!enabled) {
         setResponsePreference(game, human.id, current.kind, false);
       }
 
-      applyAction(game, current.action);
-      runAutoUntilHumanChoice();
-      render();
-      ensureAutoLoop();
-    });
-  });
-
-  const submitButtons = app.querySelectorAll<HTMLButtonElement>("button[data-role='response-submit']");
-  submitButtons.forEach((button) => {
-    button.addEventListener("click", () => {
-      if (!pendingHumanResponse || pendingHumanResponse.kind !== "nullify") {
-        return;
-      }
-
-      const current = pendingHumanResponse;
-      pendingHumanResponse = null;
-      const human = getHumanPlayer(game);
-      setResponsePreference(game, human.id, "nullify", false);
-      pendingNullifyDecisionCount = 0;
       applyAction(game, current.action);
       runAutoUntilHumanChoice();
       render();
@@ -1789,11 +2147,35 @@ function getPendingHumanResponseForAiAction(state: Game, action: TurnAction): Pe
     return null;
   }
 
+  const previewCardEventMessage = buildCardEventPreviewMessage(state, action, kind);
+
+  const nullifySingleTargetKinds = new Set(["dismantle", "snatch", "duel", "collateral", "indulgence", "lightning"]);
+  const nullifyGroupKinds = new Set(["barbarian", "archery", "taoyuan", "harvest"]);
+  const canNullifyCurrentAction =
+    (nullifySingleTargetKinds.has(kind) && action.targetId === human.id) ||
+    nullifyGroupKinds.has(kind);
+
+  if (canNullifyCurrentAction) {
+    return {
+      kind: "nullify",
+      message: `是否打出【无懈可击】响应 ${getCardKindLabelZh(kind)}？`,
+      action,
+      previewCardEventMessage,
+      allowRespond: canRespondWithNullify(state, human.id)
+    };
+  }
+
+  const trickNeedsNullifyFirst = kind === "duel" || kind === "barbarian" || kind === "archery";
+  if (trickNeedsNullifyFirst && mayHaveAnyNullifyResponder(state)) {
+    return null;
+  }
+
   if (kind === "slash" && action.targetId === human.id && canRespondWithDodge(state, human.id)) {
     return {
       kind: "dodge",
       message: `是否打出【闪】响应这张【杀】？`,
-      action
+      action,
+      previewCardEventMessage
     };
   }
 
@@ -1801,7 +2183,8 @@ function getPendingHumanResponseForAiAction(state: Game, action: TurnAction): Pe
     return {
       kind: "dodge",
       message: `是否打出【闪】响应【万箭齐发】？`,
-      action
+      action,
+      previewCardEventMessage
     };
   }
 
@@ -1809,7 +2192,8 @@ function getPendingHumanResponseForAiAction(state: Game, action: TurnAction): Pe
     return {
       kind: "slash",
       message: `是否打出【杀】响应【决斗】？`,
-      action
+      action,
+      previewCardEventMessage
     };
   }
 
@@ -1817,41 +2201,24 @@ function getPendingHumanResponseForAiAction(state: Game, action: TurnAction): Pe
     return {
       kind: "slash",
       message: `是否打出【杀】响应【南蛮入侵】？`,
-      action
+      action,
+      previewCardEventMessage
     };
   }
 
   const assistResponse = getPendingAssistResponseForAiAction(state, action, kind);
   if (assistResponse) {
-    return assistResponse;
+    return {
+      ...assistResponse,
+      previewCardEventMessage
+    };
   }
 
-  if (!canRespondWithNullify(state, human.id)) {
+  if (!canNullifyCurrentAction) {
     return null;
   }
 
-  const nullifySingleTargetKinds = new Set(["dismantle", "snatch", "duel", "collateral", "indulgence", "lightning"]);
-  const nullifyGroupKinds = new Set(["barbarian", "archery", "taoyuan", "harvest"]);
-  const canNullify =
-    (nullifySingleTargetKinds.has(kind) && action.targetId === human.id) ||
-    nullifyGroupKinds.has(kind);
-  if (!canNullify) {
-    if (shouldPromptHumanPeachResponseForAiAction(state, action)) {
-      return {
-        kind: "peach",
-        message: "本次结算可能触发濒死求桃，是否允许自动打出【桃/急救】救援？",
-        action
-      };
-    }
-
-    return null;
-  }
-
-  return {
-    kind: "nullify",
-    message: `是否打出【无懈可击】响应 ${getCardKindLabelZh(kind)}？`,
-    action
-  };
+  return null;
 }
 
 function hasSkillOnPlayer(state: Game, playerId: string, skillId: string): boolean {
@@ -1995,27 +2362,24 @@ function getPotentialDyingTargetsForAction(state: Game, action: TurnAction, kind
   return [];
 }
 
-function queueBladeFollowUpChoiceForHumanAction(action: TurnAction): boolean {
-  if (action.type !== "play-card") {
+function queuePendingBladeFollowUpPrompt(): boolean {
+  const pending = game.pendingBladeFollowUp;
+  if (!pending) {
     return false;
   }
 
   const human = getHumanPlayer(game);
-  if (action.actorId !== human.id || human.equipment.weapon?.kind !== "weapon_blade") {
+  if (pending.sourceId !== human.id) {
     return false;
   }
 
-  const actionKind = inferActionCardKindForResponse(game, action);
-  if (actionKind !== "slash") {
-    return false;
-  }
-
+  const target = game.players.find((player) => player.id === pending.targetId);
   pendingHumanResponse = {
     kind: "blade-follow-up",
-    message: "本次【杀】被【闪】后，是否允许青龙偃月刀追击？",
-    action
+    message: `${target?.name ?? "目标"} 打出【闪】后，是否发动青龙偃月刀追击？`,
+    action: { type: "end-play-phase", actorId: human.id },
+    allowRespond: canRespondWithSlash(game, human.id)
   };
-  pendingNullifyDecisionCount = 0;
   return true;
 }
 
@@ -2045,9 +2409,14 @@ function bindHandButtons(legalActions: TurnAction[]): void {
       selectedCardId = selectedCardId === cardId ? null : cardId;
       pendingPrimaryTargetId = null;
       pendingZoneChoiceActions = [];
+      pendingZoneCardChoiceActions = [];
       const selectedActions = selectedCardId
         ? legalActions.filter((action) => action.type === "play-card" && getActionSourceCardId(action) === selectedCardId)
         : [];
+      const immediateAction =
+        selectedActions.length === 1 && selectedActions[0].type === "play-card"
+          ? selectedActions[0]
+          : null;
 
       const humanId = getHumanPlayer(game).id;
       const autoEquipAction =
@@ -2059,12 +2428,35 @@ function bindHandButtons(legalActions: TurnAction[]): void {
           ? selectedActions[0]
           : null;
 
+      const autoDirectAction =
+        immediateAction &&
+        ((!immediateAction.targetId && !immediateAction.secondaryTargetId) ||
+          (immediateAction.targetId === humanId &&
+            !immediateAction.secondaryTargetId &&
+            isSelfImmediateCastCard(resolveActionCardKind(game, immediateAction))))
+          ? immediateAction
+          : null;
+
       if (autoEquipAction) {
         previewTargetIds = [];
         selectedCardId = null;
         pendingPrimaryTargetId = null;
         pendingZoneChoiceActions = [];
+        pendingZoneCardChoiceActions = [];
         applyAction(game, autoEquipAction);
+        runAutoUntilHumanChoice();
+        render();
+        ensureAutoLoop();
+        return;
+      }
+
+      if (autoDirectAction) {
+        previewTargetIds = [];
+        selectedCardId = null;
+        pendingPrimaryTargetId = null;
+        pendingZoneChoiceActions = [];
+        pendingZoneCardChoiceActions = [];
+        applyAction(game, autoDirectAction);
         runAutoUntilHumanChoice();
         render();
         ensureAutoLoop();
@@ -2082,14 +2474,32 @@ function bindHandButtons(legalActions: TurnAction[]): void {
 
 function bindPlayerTargetButtons(selectedCardActions: TurnAction[]): void {
   const playerRows = app.querySelectorAll<HTMLDivElement>(".player-row[data-player-id]");
+  const pendingTuxiChoice = getPendingTuxiChoice(game);
+  const tuxiCandidateIds = new Set((pendingTuxiChoice?.candidates ?? []).map((candidate) => candidate.id));
   playerRows.forEach((row) => {
     row.addEventListener("click", () => {
-      if (!selectedCardId) {
+      const playerId = row.dataset.playerId;
+      if (!playerId) {
         return;
       }
 
-      const playerId = row.dataset.playerId;
-      if (!playerId) {
+      if (pendingTuxiChoice) {
+        if (!tuxiCandidateIds.has(playerId)) {
+          return;
+        }
+
+        if (selectedTuxiTargetIds.includes(playerId)) {
+          selectedTuxiTargetIds = selectedTuxiTargetIds.filter((id) => id !== playerId);
+        } else if (selectedTuxiTargetIds.length < 2) {
+          selectedTuxiTargetIds = [...selectedTuxiTargetIds, playerId];
+        }
+
+        render();
+        ensureAutoLoop();
+        return;
+      }
+
+      if (!selectedCardId && selectedCardActions.length === 0) {
         return;
       }
 
@@ -2105,12 +2515,13 @@ function bindPlayerTargetButtons(selectedCardActions: TurnAction[]): void {
           selectedCardId = null;
           pendingPrimaryTargetId = null;
           pendingZoneChoiceActions = [];
-          if (queueBladeFollowUpChoiceForHumanAction(action)) {
+          pendingZoneCardChoiceActions = [];
+          applyAction(game, action);
+          if (queuePendingBladeFollowUpPrompt()) {
             render();
             ensureAutoLoop();
             return;
           }
-          applyAction(game, action);
           runAutoUntilHumanChoice();
           render();
           ensureAutoLoop();
@@ -2129,6 +2540,17 @@ function bindPlayerTargetButtons(selectedCardActions: TurnAction[]): void {
       );
       if (zoneCandidateActions.length > 1 && zones.length > 1) {
         pendingZoneChoiceActions = zoneCandidateActions;
+        pendingZoneCardChoiceActions = [];
+        pendingPrimaryTargetId = null;
+        previewTargetIds = [playerId];
+        render();
+        ensureAutoLoop();
+        return;
+      }
+
+      if (zoneCandidateActions.length > 1 && zones.length === 1) {
+        pendingZoneChoiceActions = [];
+        pendingZoneCardChoiceActions = zoneCandidateActions;
         pendingPrimaryTargetId = null;
         previewTargetIds = [playerId];
         render();
@@ -2140,6 +2562,7 @@ function bindPlayerTargetButtons(selectedCardActions: TurnAction[]): void {
       if (requiresSecondaryActions.length > 0) {
         pendingPrimaryTargetId = playerId;
         pendingZoneChoiceActions = [];
+        pendingZoneCardChoiceActions = [];
         previewTargetIds = Array.from(
           new Set(
             requiresSecondaryActions
@@ -2157,12 +2580,13 @@ function bindPlayerTargetButtons(selectedCardActions: TurnAction[]): void {
       selectedCardId = null;
       pendingPrimaryTargetId = null;
       pendingZoneChoiceActions = [];
-      if (queueBladeFollowUpChoiceForHumanAction(action)) {
+      pendingZoneCardChoiceActions = [];
+      applyAction(game, action);
+      if (queuePendingBladeFollowUpPrompt()) {
         render();
         ensureAutoLoop();
         return;
       }
-      applyAction(game, action);
       runAutoUntilHumanChoice();
       render();
       ensureAutoLoop();
@@ -2181,6 +2605,7 @@ function bindInlineEndPlayButton(endPlayAction: TurnAction | null): void {
     selectedCardId = null;
     pendingPrimaryTargetId = null;
     pendingZoneChoiceActions = [];
+    pendingZoneCardChoiceActions = [];
     applyAction(game, endPlayAction);
     stepPhase(game);
     runAutoUntilHumanChoice();
@@ -2203,18 +2628,53 @@ function bindZoneChoiceButtons(): void {
         return;
       }
 
-      const action = choosePreferredAction(candidate);
-      previewTargetIds = [];
-      selectedCardId = null;
-      pendingPrimaryTargetId = null;
-      pendingZoneChoiceActions = [];
-      if (queueBladeFollowUpChoiceForHumanAction(action)) {
+      if (candidate.length > 1) {
+        pendingZoneCardChoiceActions = candidate;
         render();
         ensureAutoLoop();
         return;
       }
 
+      const action = choosePreferredAction(candidate);
+      previewTargetIds = [];
+      selectedCardId = null;
+      pendingPrimaryTargetId = null;
+      pendingZoneChoiceActions = [];
+      pendingZoneCardChoiceActions = [];
       applyAction(game, action);
+      if (queuePendingBladeFollowUpPrompt()) {
+        render();
+        ensureAutoLoop();
+        return;
+      }
+      runAutoUntilHumanChoice();
+      render();
+      ensureAutoLoop();
+    });
+  });
+}
+
+function bindZoneCardChoiceButtons(): void {
+  const buttons = app.querySelectorAll<HTMLButtonElement>("button[data-role='zone-card-choice']");
+  buttons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const index = Number(button.dataset.index);
+      if (!Number.isInteger(index) || index < 0 || index >= pendingZoneCardChoiceActions.length) {
+        return;
+      }
+
+      const action = pendingZoneCardChoiceActions[index];
+      previewTargetIds = [];
+      selectedCardId = null;
+      pendingPrimaryTargetId = null;
+      pendingZoneChoiceActions = [];
+      pendingZoneCardChoiceActions = [];
+      applyAction(game, action);
+      if (queuePendingBladeFollowUpPrompt()) {
+        render();
+        ensureAutoLoop();
+        return;
+      }
       runAutoUntilHumanChoice();
       render();
       ensureAutoLoop();
@@ -2271,13 +2731,13 @@ function bindTargetActionButtons(selectedCardActions: TurnAction[], endPlayActio
 
       const action = selectedCardActions[index];
       previewTargetIds = [];
-      if (queueBladeFollowUpChoiceForHumanAction(action)) {
+      applyAction(game, action);
+      if (queuePendingBladeFollowUpPrompt()) {
         selectedCardId = null;
         render();
         ensureAutoLoop();
         return;
       }
-      applyAction(game, action);
       if (action.type === "end-play-phase") {
         stepPhase(game);
       }
@@ -2307,7 +2767,7 @@ function runOneTick(): void {
     return;
   }
 
-  if (isPendingLuoyiChoice(game) || pendingHumanResponse) {
+  if (getPendingTuxiChoice(game) || isPendingLuoyiChoice(game) || pendingHumanResponse) {
     return;
   }
 
@@ -2334,7 +2794,6 @@ function runOneTick(): void {
   const pending = getPendingHumanResponseForAiAction(game, action);
   if (pending) {
     pendingHumanResponse = pending;
-    pendingNullifyDecisionCount = 0;
     return;
   }
   applyAction(game, action);
@@ -2346,7 +2805,7 @@ function runOneTick(): void {
 function runAutoUntilHumanChoice(maxTicks = 500): void {
   let ticks = 0;
   while (!game.winner && ticks < maxTicks) {
-    if (isPendingLuoyiChoice(game) || pendingHumanResponse) {
+    if (getPendingTuxiChoice(game) || isPendingLuoyiChoice(game) || pendingHumanResponse) {
       break;
     }
 
@@ -2372,7 +2831,6 @@ function runAutoUntilHumanChoice(maxTicks = 500): void {
     const pending = getPendingHumanResponseForAiAction(game, action);
     if (pending) {
       pendingHumanResponse = pending;
-      pendingNullifyDecisionCount = 0;
       break;
     }
     applyAction(game, action);
@@ -2395,7 +2853,11 @@ function ensureAutoLoop(): void {
 
   autoplayTimer = window.setTimeout(() => {
     const actor = game.players.find((player) => player.id === game.currentPlayerId);
-    const shouldWaitForHuman = (actor && !actor.isAi && game.phase === "play") || isPendingLuoyiChoice(game) || !!pendingHumanResponse;
+    const shouldWaitForHuman =
+      (actor && !actor.isAi && game.phase === "play") ||
+      !!getPendingTuxiChoice(game) ||
+      isPendingLuoyiChoice(game) ||
+      !!pendingHumanResponse;
     if (!shouldWaitForHuman) {
       runAutoUntilHumanChoice();
       render();
