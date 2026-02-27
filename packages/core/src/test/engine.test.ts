@@ -189,7 +189,7 @@ test("snatch should expose selectable target zones", () => {
         action.type === "play-card" && action.cardId === "snatch-zone-1" && action.targetId === target.id
     )
     .map((action) => action.targetZone)
-    .filter((zone): zone is string => Boolean(zone))
+    .filter((zone): zone is Exclude<PlayCardAction["targetZone"], undefined> => Boolean(zone))
     .sort();
 
   assert.deepEqual(zones, ["equipment", "hand", "judgment"]);

@@ -420,6 +420,10 @@ const SKILL_NAME_ZH: Record<string, string> = {
   [STANDARD_SKILL_IDS.huatuoJijiu]: "急救"
 };
 
+const GENERAL_SKILL_IDS_BY_GENERAL_ID: Record<string, string[]> = Object.fromEntries(
+  STANDARD_GENERAL_CHECKLIST.map((item) => [item.generalId, [...item.skills]])
+);
+
 const CARD_KIND_LABEL_ZH: Record<string, string> = {
   slash: "杀",
   dodge: "闪",
@@ -465,6 +469,7 @@ let identitySetupMode: IdentitySetupMode = "fixed-standard";
 let preferredHumanIdentity: PlayerState["identity"] = "lord";
 let playerGeneralIdByPlayerId: Record<string, string> = {};
 let game = createGame(Date.now());
+let gameStarted = false;
 let autoMode = true;
 let autoplayTimer: number | null = null;
 let previewTargetIds: string[] = [];
@@ -524,6 +529,21 @@ function createGame(seed: number): Game {
   alignFirstTurnToLord(state);
   playerGeneralIdByPlayerId = setupRoster(state, seed);
   return state;
+}
+
+function resetUiSelections(): void {
+  previewTargetIds = [];
+  selectedCardId = null;
+  pendingPrimaryTargetId = null;
+  pendingZoneChoiceActions = [];
+  activeSkillModeId = null;
+  pendingHumanResponse = null;
+  pendingNullifyDecisionCount = 0;
+}
+
+function startNewGame(seed = Date.now()): void {
+  game = createGame(seed);
+  resetUiSelections();
 }
 
 function alignFirstTurnToLord(state: Game): void {
@@ -739,6 +759,60 @@ function renderHumanResponsePanel(pending: PendingHumanResponse): string {
 }
 
 function render(): void {
+  if (!gameStarted) {
+    app.innerHTML = `
+      <main class="setup-page-layout">
+        <section class="panel setup-page-panel">
+          <h2>开局设置</h2>
+          <div class="status">先选择模式与武将，点击“进入对局”后再开始正式游戏界面。</div>
+          <div class="setup-controls">
+            <label class="header-control">
+              武将模式
+              <select data-role="roster-mode">
+                <option value="pick-human" ${rosterMode === "pick-human" ? "selected" : ""}>手选主将 + AI随机</option>
+                <option value="random-all" ${rosterMode === "random-all" ? "selected" : ""}>全员随机</option>
+                <option value="fixed-demo" ${rosterMode === "fixed-demo" ? "selected" : ""}>固定演示阵容</option>
+              </select>
+            </label>
+            <label class="header-control">
+              身份模式
+              <select data-role="identity-mode">
+                <option value="fixed-standard" ${identitySetupMode === "fixed-standard" ? "selected" : ""}>标准座次</option>
+                <option value="random-all" ${identitySetupMode === "random-all" ? "selected" : ""}>全员随机</option>
+                <option value="pick-human" ${identitySetupMode === "pick-human" ? "selected" : ""}>指定我的身份</option>
+              </select>
+            </label>
+            <label class="header-control">
+              我的身份
+              <select data-role="human-identity" ${identitySetupMode === "pick-human" ? "" : "disabled"}>
+                <option value="lord" ${preferredHumanIdentity === "lord" ? "selected" : ""}>主公</option>
+                <option value="loyalist" ${preferredHumanIdentity === "loyalist" ? "selected" : ""}>忠臣</option>
+                <option value="rebel" ${preferredHumanIdentity === "rebel" ? "selected" : ""}>反贼</option>
+                <option value="renegade" ${preferredHumanIdentity === "renegade" ? "selected" : ""}>内奸</option>
+              </select>
+            </label>
+            <label class="header-control">
+              我的武将
+              <select data-role="human-general" ${rosterMode === "pick-human" ? "" : "disabled"}>
+                ${STANDARD_GENERAL_CHECKLIST.map(
+                  (item) =>
+                    `<option value="${item.generalId}" ${item.generalId === preferredHumanGeneralId ? "selected" : ""}>${item.generalName}</option>`
+                ).join("")}
+              </select>
+            </label>
+          </div>
+          <div class="setup-actions-row">
+            <button data-role="random-human" ${rosterMode === "pick-human" ? "" : "disabled"}>随机我的武将</button>
+            <button data-role="start-game">进入对局</button>
+          </div>
+        </section>
+      </main>
+    `;
+
+    bindGlobalButtons();
+    return;
+  }
+
   const actor = game.players.find((player) => player.id === game.currentPlayerId);
   const pendingLuoyiChoice = isPendingLuoyiChoice(game);
   const pendingResponse = pendingHumanResponse;
@@ -812,95 +886,38 @@ function render(): void {
   );
 
   const endPlayAction = legalActions.find((action) => action.type === "end-play-phase") ?? null;
+  const humanPlayer = getHumanPlayer(game);
+  const humanGeneralId = playerGeneralIdByPlayerId[humanPlayer.id] ?? getGeneralIdByName(humanPlayer.name);
+  const humanEquipmentSummary = getEquipmentSummary(humanPlayer);
+  const humanJudgmentSummary = getJudgmentSummary(humanPlayer);
+  const humanIdentityLabel = IDENTITY_LABEL_ZH[humanPlayer.identity];
+  const selfIsTargeted = previewTargetIds.includes(humanPlayer.id);
+  const selfIsPrimarySelected = pendingPrimaryTargetId === humanPlayer.id;
+  const selfIsSelectable = selectableTargetIds.includes(humanPlayer.id);
+  const selfRowClass = [
+    "player-row",
+    "self-general-card",
+    selfIsTargeted ? "targeted" : "",
+    selfIsPrimarySelected ? "primary-selected" : "",
+    selfIsSelectable ? "clickable" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   app.innerHTML = `
-    <main class="layout">
-      <section class="panel header">
-        <div>
-          <div class="status">回合 ${game.turnCount} · 当前 ${actor?.name ?? "未知"} · 阶段 ${PHASE_LABEL[game.phase]} · 模式 ${activeSkillModeId ? `技能(${getSkillModeLabel(activeSkillModeId)})` : "普通出牌"}</div>
-        </div>
-        <div>
-          <label class="header-control">
-            武将模式
-            <select data-role="roster-mode">
-              <option value="pick-human" ${rosterMode === "pick-human" ? "selected" : ""}>手选主将 + AI随机</option>
-              <option value="random-all" ${rosterMode === "random-all" ? "selected" : ""}>全员随机</option>
-              <option value="fixed-demo" ${rosterMode === "fixed-demo" ? "selected" : ""}>固定演示阵容</option>
-            </select>
-          </label>
-          <label class="header-control">
-            身份模式
-            <select data-role="identity-mode">
-              <option value="fixed-standard" ${identitySetupMode === "fixed-standard" ? "selected" : ""}>标准座次</option>
-              <option value="random-all" ${identitySetupMode === "random-all" ? "selected" : ""}>全员随机</option>
-              <option value="pick-human" ${identitySetupMode === "pick-human" ? "selected" : ""}>指定我的身份</option>
-            </select>
-          </label>
-          <label class="header-control">
-            我的身份
-            <select data-role="human-identity" ${identitySetupMode === "pick-human" ? "" : "disabled"}>
-              <option value="lord" ${preferredHumanIdentity === "lord" ? "selected" : ""}>主公</option>
-              <option value="loyalist" ${preferredHumanIdentity === "loyalist" ? "selected" : ""}>忠臣</option>
-              <option value="rebel" ${preferredHumanIdentity === "rebel" ? "selected" : ""}>反贼</option>
-              <option value="renegade" ${preferredHumanIdentity === "renegade" ? "selected" : ""}>内奸</option>
-            </select>
-          </label>
-          <label class="header-control">
-            我的武将
-            <select data-role="human-general" ${rosterMode === "pick-human" ? "" : "disabled"}>
-              ${STANDARD_GENERAL_CHECKLIST.map(
-                (item) =>
-                  `<option value="${item.generalId}" ${item.generalId === preferredHumanGeneralId ? "selected" : ""}>${item.generalName}</option>`
-              ).join("")}
-            </select>
-          </label>
-          <button data-role="random-human" ${rosterMode === "pick-human" ? "" : "disabled"}>随机我的武将</button>
-          <button data-role="new-game">新开一局</button>
+    <main class="battle-layout">
+      <section class="panel battle-topbar">
+        <div class="status">回合 ${game.turnCount} · 当前 ${actor?.name ?? "未知"} · 阶段 ${PHASE_LABEL[game.phase]} · 模式 ${activeSkillModeId ? `技能(${getSkillModeLabel(activeSkillModeId)})` : "普通出牌"}</div>
+        <div class="setup-controls">
+          <button data-role="new-game">重新开局</button>
+          <button data-role="back-to-setup">返回设置</button>
           <button data-role="auto-toggle">${autoMode ? "停止自动推进" : "自动推进"}</button>
           <button data-role="step">单步推进</button>
         </div>
       </section>
 
-      <section class="left-column-stack">
-        <section class="panel skill-panel">
-          <h2>技能</h2>
-          <div class="skill-list">${renderSkillPanel(game, allLegalActions, activeSkillModeId)}</div>
-        </section>
-
-        <section class="panel hand-panel">
-          <h2>你的手牌</h2>
-          <div class="status hand-hint">${getTargetSelectionHint(
-            game,
-            selectedCardActions,
-            pendingPrimaryTargetId,
-            pendingZoneChoiceActions
-          )}</div>
-          ${renderZoneChoiceActions(pendingZoneChoiceActions)}
-          <div class="hand-list">${renderHand(humanHand, legalActions, selectedCardId)}</div>
-          <div class="hand-actions">
-            ${endPlayAction ? '<button data-role="end-play-inline">结束出牌阶段</button>' : ""}
-          </div>
-        </section>
-
-        ${pendingLuoyiChoice
-          ? `<section class="panel">
-        <h2>摸牌阶段决策</h2>
-        <div class="action-list">${renderLuoyiChoicePanel(game)}</div>
-      </section>`
-          : ""}
-
-        ${pendingResponse
-          ? `<section class="panel">
-        <h2>响应窗口</h2>
-        <div class="action-list">${renderHumanResponsePanel(pendingResponse)}</div>
-      </section>`
-          : ""}
-      </section>
-
-      <section class="panel board-panel">
-        <h2>武将区</h2>
-        <div class="seat-direction">回合顺序：按座次顺时针进行（→）</div>
-        <div class="player-list circle">
+      <section class="panel battle-table">
+        <div class="player-list official-table">
           ${renderPlayers(game, previewTargetIds, selectableTargetIds, pendingPrimaryTargetId)}
           <section class="center-log">
             <div class="center-log-title">事件日志</div>
@@ -909,6 +926,49 @@ function render(): void {
         </div>
       </section>
 
+      <section class="panel self-zone">
+        <div class="self-head">
+          <div class="${selfRowClass}" data-player-id="${humanPlayer.id}">
+            <img class="avatar" src="${ASSET_BASE}/generals/${humanGeneralId}.png" alt="${humanPlayer.name}" />
+            <div class="player-name">${humanPlayer.name}</div>
+            <div class="player-core">${humanPlayer.hp}/${humanPlayer.maxHp} ♥ · 手牌 ${humanPlayer.hand.length}</div>
+            <div class="player-tags">
+              <span class="badge">${humanIdentityLabel}</span>
+              <span class="badge ${humanPlayer.alive ? "" : "dead"}">${humanPlayer.alive ? "存活" : "阵亡"}</span>
+            </div>
+          </div>
+          <div class="self-status-panels">
+            <div class="status">装备区：${humanEquipmentSummary}</div>
+            <div class="status">判定区：${humanJudgmentSummary}</div>
+            <div class="self-skill-toolbar">${renderSkillToolbar(game, allLegalActions, activeSkillModeId)}</div>
+            ${pendingLuoyiChoice
+              ? `<section>
+            <h2>摸牌阶段决策</h2>
+            <div class="action-list">${renderLuoyiChoicePanel(game)}</div>
+          </section>`
+              : ""}
+            ${pendingResponse
+              ? `<section>
+            <h2>响应窗口</h2>
+            <div class="action-list">${renderHumanResponsePanel(pendingResponse)}</div>
+          </section>`
+              : ""}
+          </div>
+        </div>
+
+        <h2>你的手牌</h2>
+        <div class="status hand-hint">${getTargetSelectionHint(
+          game,
+          selectedCardActions,
+          pendingPrimaryTargetId,
+          pendingZoneChoiceActions
+        )}</div>
+        ${renderZoneChoiceActions(pendingZoneChoiceActions)}
+        <div class="hand-list">${renderHand(humanHand, legalActions, selectedCardId)}</div>
+        <div class="hand-actions">
+          ${endPlayAction ? '<button data-role="end-play-inline">结束出牌阶段</button>' : ""}
+        </div>
+      </section>
     </main>
   `;
 
@@ -1051,6 +1111,70 @@ function renderSkillPanel(state: Game, allLegalActions: TurnAction[], currentMod
     .join("");
 }
 
+function getEquipmentSummary(player: PlayerState): string {
+  const equipmentParts: string[] = [];
+  if (player.equipment.weapon) {
+    equipmentParts.push(`武器:${getCardKindLabelZh(player.equipment.weapon.kind)}`);
+  }
+  if (player.equipment.armor) {
+    equipmentParts.push(`防具:${getCardKindLabelZh(player.equipment.armor.kind)}`);
+  }
+  if (player.equipment.horsePlus) {
+    equipmentParts.push(`+马:${getCardKindLabelZh(player.equipment.horsePlus.kind)}`);
+  }
+  if (player.equipment.horseMinus) {
+    equipmentParts.push(`-马:${getCardKindLabelZh(player.equipment.horseMinus.kind)}`);
+  }
+
+  return equipmentParts.length > 0 ? equipmentParts.join(" · ") : "无";
+}
+
+function getJudgmentSummary(player: PlayerState): string {
+  return player.judgmentZone.delayedTricks.length > 0
+    ? player.judgmentZone.delayedTricks.map((card) => getCardKindLabelZh(card.kind)).join("、")
+    : "无";
+}
+
+function renderSkillToolbar(state: Game, allLegalActions: TurnAction[], currentModeId: string | null): string {
+  const human = getHumanPlayer(state);
+  const skillIds = state.skillSystem.playerSkills[human.id] ?? [];
+  const manualSkills = skillIds
+    .map((skillId) => {
+      const config = SKILL_UI_CONFIG[skillId];
+      if (!config || config.trigger !== "manual" || !config.modeId) {
+        return "";
+      }
+
+      const available = allLegalActions.some((action) => getActionModeId(action) === config.modeId);
+      return `<button data-role="skill-toggle" data-mode-id="${config.modeId}" ${available ? "" : "disabled"}>${
+        currentModeId === config.modeId ? `取消${config.name}` : config.name
+      }</button>`;
+    })
+    .filter(Boolean)
+    .join("");
+
+  return manualSkills || '<span class="status">当前无主动技可发动</span>';
+}
+
+function getOpponentSeatPosition(index: number, seatCount: number): { left: number; top: number } {
+  if (seatCount === 4) {
+    const fixed = [
+      { left: 14, top: 58 },
+      { left: 34, top: 28 },
+      { left: 66, top: 28 },
+      { left: 86, top: 58 }
+    ];
+    return fixed[index] ?? fixed[fixed.length - 1]!;
+  }
+
+  const angle = 180 + (180 / Math.max(seatCount - 1, 1)) * index;
+  const rad = (angle * Math.PI) / 180;
+  return {
+    left: 50 + 36 * Math.cos(rad),
+    top: 54 + 34 * Math.sin(rad)
+  };
+}
+
 function renderPlayers(
   state: Game,
   targetedIds: string[],
@@ -1063,10 +1187,11 @@ function renderPlayers(
     viewerSeatIndex >= 0
       ? state.players.map((_, offset) => state.players[(viewerSeatIndex + offset) % state.players.length]!)
       : state.players;
-  const seatCount = orderedPlayers.length;
+  const opponents = orderedPlayers.filter((player) => player.id !== viewerId);
+  const seatCount = opponents.length;
 
-  return orderedPlayers
-    .map((player) => {
+  return opponents
+    .map((player, index) => {
       const isCurrent = player.id === state.currentPlayerId;
       const isTargeted = targetedIds.includes(player.id);
       const isSelectable = selectableTargetIds.includes(player.id);
@@ -1074,26 +1199,21 @@ function renderPlayers(
       const identityLabel = identityVisible ? IDENTITY_LABEL_ZH[player.identity] : "未知";
       const generalId = getGeneralIdByName(player.name);
       const mappedGeneralId = playerGeneralIdByPlayerId[player.id] ?? generalId;
+      const skillIds = GENERAL_SKILL_IDS_BY_GENERAL_ID[mappedGeneralId] ?? [];
+      const skillItems =
+        skillIds.length > 0
+          ? skillIds
+              .map((skillId) => {
+                const config = SKILL_UI_CONFIG[skillId];
+                const name = config?.name ?? SKILL_NAME_ZH[skillId] ?? skillId;
+                const desc = config?.description ?? "规则层已实现该技能，当前为通用说明展示。";
+                return `<div class="player-skill-item"><strong>${name}</strong>：${desc}</div>`;
+              })
+              .join("")
+          : `<div class="player-skill-item">暂无技能信息</div>`;
       const tag = player.alive ? "存活" : "阵亡";
-      const equipmentParts: string[] = [];
-      if (player.equipment.weapon) {
-        equipmentParts.push(`武器:${getCardKindLabelZh(player.equipment.weapon.kind)}`);
-      }
-      if (player.equipment.armor) {
-        equipmentParts.push(`防具:${getCardKindLabelZh(player.equipment.armor.kind)}`);
-      }
-      if (player.equipment.horsePlus) {
-        equipmentParts.push(`+马:${getCardKindLabelZh(player.equipment.horsePlus.kind)}`);
-      }
-      if (player.equipment.horseMinus) {
-        equipmentParts.push(`-马:${getCardKindLabelZh(player.equipment.horseMinus.kind)}`);
-      }
-
-      const equipmentSummary = equipmentParts.length > 0 ? equipmentParts.join(" · ") : "无";
-      const judgmentSummary =
-        player.judgmentZone.delayedTricks.length > 0
-          ? player.judgmentZone.delayedTricks.map((card) => getCardKindLabelZh(card.kind)).join("、")
-          : "无";
+      const equipmentSummary = getEquipmentSummary(player);
+      const judgmentSummary = getJudgmentSummary(player);
       const isPrimarySelected = primaryTargetId === player.id;
       const rowClass = [
         "player-row",
@@ -1104,11 +1224,7 @@ function renderPlayers(
       ]
         .filter(Boolean)
         .join(" ");
-      const orderedSeatIndex = orderedPlayers.findIndex((slot) => slot.id === player.id);
-      const angle = 90 + (360 / seatCount) * orderedSeatIndex;
-      const angleRad = (angle * Math.PI) / 180;
-      const left = 50 + 42 * Math.cos(angleRad);
-      const top = 50 + 42 * Math.sin(angleRad);
+      const { left, top } = getOpponentSeatPosition(index, seatCount);
       const realSeatIndex = state.players.findIndex((slot) => slot.id === player.id);
       const seatLabel = realSeatIndex >= 0 ? `#${realSeatIndex + 1}` : "未知";
       const seatDistance = getSeatDistance(state, viewerId, player.id);
@@ -1119,15 +1235,23 @@ function renderPlayers(
         <div class="player-seat" style="left:${left}%;top:${top}%">
         <div class="${rowClass}" data-player-id="${player.id}" title="${detailTitle}">
           <img class="avatar" src="${ASSET_BASE}/generals/${mappedGeneralId}.png" alt="${player.name}" />
-          <div class="player-info">
-            <div class="player-name">${player.name}</div>
-            <div>
-              <span class="badge ${identityVisible ? "" : "hidden"}">${identityLabel}</span>
-              <span class="badge ${player.alive ? "" : "dead"}">${tag}</span>
-              ${player.isAi ? "<span class=\"badge\">AI</span>" : "<span class=\"badge\">玩家</span>"}
-            </div>
-            <div class="player-core">体力 ${player.hp}/${player.maxHp} · 手牌 ${player.hand.length}</div>
-            <div class="player-seat-line">座位 ${seatLabel} · 距离 ${distanceLabel}</div>
+          <div class="player-name">${player.name}</div>
+          <div class="player-core">${player.hp}/${player.maxHp} ♥ · 手牌 ${player.hand.length}</div>
+          <div class="player-tags">
+            <span class="badge ${identityVisible ? "" : "hidden"}">${identityLabel}</span>
+            <span class="badge ${player.alive ? "" : "dead"}">${tag}</span>
+          </div>
+          <div class="player-popover player-popover-right">
+            <div class="player-popover-title">技能</div>
+            <div class="player-skill-list">${skillItems}</div>
+          </div>
+          <div class="player-popover player-popover-bottom">
+            <div class="player-popover-title">${player.name}</div>
+            <div>座位 ${seatLabel} · 距离 ${distanceLabel}</div>
+            <div>体力 ${player.hp}/${player.maxHp} · 手牌 ${player.hand.length}</div>
+            <div>身份：${identityLabel} · ${player.isAi ? "AI" : "玩家"}</div>
+            <div>装备区：${equipmentSummary}</div>
+            <div>判定区：${judgmentSummary}</div>
           </div>
         </div>
         </div>
@@ -1424,6 +1548,8 @@ function updatePlayerPreview(targetedIds: string[]): void {
 }
 
 function bindGlobalButtons(): void {
+  const startGameBtn = app.querySelector<HTMLButtonElement>("button[data-role='start-game']");
+  const backToSetupBtn = app.querySelector<HTMLButtonElement>("button[data-role='back-to-setup']");
   const newGameBtn = app.querySelector<HTMLButtonElement>("button[data-role='new-game']");
   const randomHumanBtn = app.querySelector<HTMLButtonElement>("button[data-role='random-human']");
   const autoToggleBtn = app.querySelector<HTMLButtonElement>("button[data-role='auto-toggle']");
@@ -1461,21 +1587,27 @@ function bindGlobalButtons(): void {
   randomHumanBtn?.addEventListener("click", () => {
     const shuffled = shuffleWithSeed([...STANDARD_GENERAL_CHECKLIST], Date.now() ^ game.seed);
     preferredHumanGeneralId = shuffled[0]?.generalId ?? preferredHumanGeneralId;
-    pendingHumanResponse = null;
-    pendingNullifyDecisionCount = 0;
+    resetUiSelections();
+    render();
+    ensureAutoLoop();
+  });
+
+  startGameBtn?.addEventListener("click", () => {
+    gameStarted = true;
+    startNewGame(Date.now());
+    render();
+    ensureAutoLoop();
+  });
+
+  backToSetupBtn?.addEventListener("click", () => {
+    gameStarted = false;
+    resetUiSelections();
     render();
     ensureAutoLoop();
   });
 
   newGameBtn?.addEventListener("click", () => {
-    game = createGame(Date.now());
-    previewTargetIds = [];
-    selectedCardId = null;
-    pendingPrimaryTargetId = null;
-    pendingPrimaryTargetId = null;
-    activeSkillModeId = null;
-    pendingHumanResponse = null;
-    pendingNullifyDecisionCount = 0;
+    startNewGame(Date.now());
     render();
     ensureAutoLoop();
   });
@@ -1487,15 +1619,7 @@ function bindGlobalButtons(): void {
   });
 
   stepBtn?.addEventListener("click", () => {
-    previewTargetIds = [];
-    selectedCardId = null;
-    pendingPrimaryTargetId = null;
-    pendingZoneChoiceActions = [];
-    pendingZoneChoiceActions = [];
-    pendingZoneChoiceActions = [];
-    activeSkillModeId = null;
-    pendingHumanResponse = null;
-    pendingNullifyDecisionCount = 0;
+    resetUiSelections();
     runOneTick();
     render();
     ensureAutoLoop();
@@ -2265,7 +2389,7 @@ function ensureAutoLoop(): void {
     autoplayTimer = null;
   }
 
-  if (!autoMode || game.winner) {
+  if (!gameStarted || !autoMode || game.winner) {
     return;
   }
 
