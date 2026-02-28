@@ -7,13 +7,22 @@ import {
   canRespondWithNullify,
   canRespondWithPeach,
   canRespondWithSlash,
+  chooseHarvestCard,
   chooseAiAction,
   createInitialGame,
+  discardSelectedCards,
+  getPendingMassTrickAction,
+  getPendingHarvestChoice,
   getPlayerKingdomById,
   getLegalActions,
+  prepareEightDiagramJudge,
   queueResponseDecision,
   resolvePendingBladeFollowUp,
   setBladeFollowUpPromptMode,
+  setHalberdManualTargetMode,
+  setManualDiscardMode,
+  setManualHarvestSelectionMode,
+  setManualMassTrickStepMode,
   setResponsePreference,
   setLuoyiChoice,
   setTuxiTargets,
@@ -48,6 +57,14 @@ type PendingHumanResponse = {
   action: TurnAction;
   previewCardEventMessage?: string;
   allowRespond?: boolean;
+  nullifyTrickKind?: "dismantle" | "snatch" | "duel" | "barbarian" | "archery" | "taoyuan" | "harvest" | "collateral";
+  nullifySourceId?: string;
+  nullifyTargetId?: string;
+  nullifyChosenDecisions?: boolean[];
+  nullifyGroupTargetIds?: string[];
+  nullifyGroupCursor?: number;
+  nullifyQueuedTrueCount?: number;
+  pendingHarvestCardId?: string;
 };
 
 const ASSET_BASE = `${import.meta.env.BASE_URL}assets`;
@@ -122,6 +139,14 @@ const GENERAL_BASE_MAX_HP: Record<string, number> = {
   huangyueying: 3,
   zhenji: 3,
   huatuo: 3
+};
+
+const GENERAL_GENDER: Record<string, PlayerState["gender"]> = {
+  sunshangxiang: "female",
+  daqiao: "female",
+  diaochan: "female",
+  huangyueying: "female",
+  zhenji: "female"
 };
 
 const PHASE_LABEL: Record<GameState["phase"], string> = {
@@ -476,6 +501,8 @@ let rosterMode: RosterMode = "pick-human";
 let preferredHumanGeneralId = "liubei";
 let identitySetupMode: IdentitySetupMode = "fixed-standard";
 let preferredHumanIdentity: PlayerState["identity"] = "lord";
+let manualInitialHandMode = false;
+let manualInitialHandKinds: Card["kind"][] = ["slash", "dodge", "peach", "nullify"];
 let playerGeneralIdByPlayerId: Record<string, string> = {};
 let game = createGame(createRuntimeSeed());
 let gameStarted = false;
@@ -484,11 +511,13 @@ let autoplayTimer: number | null = null;
 let previewTargetIds: string[] = [];
 let selectedCardId: string | null = null;
 let pendingPrimaryTargetId: string | null = null;
+let pendingSecondaryTargetId: string | null = null;
 let pendingZoneChoiceActions: PlayCardAction[] = [];
 let pendingZoneCardChoiceActions: PlayCardAction[] = [];
 let activeSkillModeId: string | null = null;
 let pendingHumanResponse: PendingHumanResponse | null = null;
 let selectedTuxiTargetIds: string[] = [];
+let selectedDiscardCardIds: string[] = [];
 
 if (!foundApp) {
   showFatalError(new Error("页面缺少 #app 容器节点"));
@@ -534,26 +563,79 @@ function escapeHtml(value: string): string {
 }
 
 function createGame(seed: number): Game {
-  const state = createInitialGame(seed);
+  const state = createInitialGame(seed, { nullifyResponsePolicy: "seat-order" });
   const human = state.players[0];
   if (human) {
+    setResponsePreference(state, human.id, "peach", false);
     setBladeFollowUpPromptMode(state, human.id, true);
+    setHalberdManualTargetMode(state, human.id, true);
+    setManualDiscardMode(state, human.id, true);
+    setManualHarvestSelectionMode(state, true);
+    setManualMassTrickStepMode(state, true);
   }
   applyIdentitySetup(state, seed);
   alignFirstTurnToLord(state);
   playerGeneralIdByPlayerId = setupRoster(state, seed);
+  applyManualInitialHandIfNeeded(state);
   return state;
+}
+
+function applyManualInitialHandIfNeeded(state: Game): void {
+  if (!manualInitialHandMode) {
+    return;
+  }
+
+  const human = getHumanPlayer(state);
+  if (!human.alive) {
+    return;
+  }
+
+  const desiredKinds = manualInitialHandKinds.slice(0, 4);
+  if (desiredKinds.length === 0) {
+    return;
+  }
+
+  const replaced = [...human.hand];
+  human.hand = [];
+
+  for (const kind of desiredKinds) {
+    const deckIndex = state.deck.findIndex((card) => card.kind === kind);
+    if (deckIndex >= 0) {
+      const [selected] = state.deck.splice(deckIndex, 1);
+      if (selected) {
+        human.hand.push(selected);
+        continue;
+      }
+    }
+
+    const fallback = state.deck.shift();
+    if (fallback) {
+      human.hand.push(fallback);
+    }
+  }
+
+  while (human.hand.length < 4) {
+    const fallback = state.deck.shift();
+    if (!fallback) {
+      break;
+    }
+    human.hand.push(fallback);
+  }
+
+  state.deck.unshift(...replaced);
 }
 
 function resetUiSelections(): void {
   previewTargetIds = [];
   selectedCardId = null;
   pendingPrimaryTargetId = null;
+  pendingSecondaryTargetId = null;
   pendingZoneChoiceActions = [];
   pendingZoneCardChoiceActions = [];
   activeSkillModeId = null;
   pendingHumanResponse = null;
   selectedTuxiTargetIds = [];
+  selectedDiscardCardIds = [];
 }
 
 function startNewGame(seed = createRuntimeSeed()): void {
@@ -692,6 +774,7 @@ function assignChosenGenerals(
 }
 
 function applyGeneralHp(slot: PlayerState, generalId: string): void {
+  slot.gender = GENERAL_GENDER[generalId] ?? "male";
   const baseMaxHp = GENERAL_BASE_MAX_HP[generalId] ?? 4;
   const roleBonus = slot.identity === "lord" ? 1 : 0;
   const finalMaxHp = baseMaxHp + roleBonus;
@@ -780,6 +863,56 @@ function renderLuoyiChoicePanel(state: Game): string {
   `;
 }
 
+function getPendingManualDiscardChoice(state: Game): { actor: PlayerState; needCount: number } | null {
+  if (state.winner || state.phase !== "discard") {
+    return null;
+  }
+
+  const actor = state.players.find((player) => player.id === state.currentPlayerId);
+  if (!actor || !actor.alive || actor.isAi) {
+    return null;
+  }
+
+  if (state.manualDiscardByPlayer[actor.id] !== true) {
+    return null;
+  }
+
+  const needCount = actor.hand.length - actor.hp;
+  if (needCount <= 0) {
+    return null;
+  }
+
+  return { actor, needCount };
+}
+
+function renderManualDiscardPanel(pending: { actor: PlayerState; needCount: number }): string {
+  const selectedCount = Math.min(selectedDiscardCardIds.length, pending.needCount);
+  return `
+    <div class="status">${pending.actor.name} 弃牌阶段：请选择 ${pending.needCount} 张手牌（已选 ${selectedCount}）。</div>
+    <div class="response-actions">
+      <button data-role="manual-discard-confirm" ${selectedCount >= pending.needCount ? "" : "disabled"}>确认弃牌</button>
+    </div>
+  `;
+}
+
+function renderHarvestChoicePanel(pending: { pickerId: string; revealed: Card[]; participantIds: string[] }): string {
+  const picker = game.players.find((player) => player.id === pending.pickerId);
+  const pickerName = picker?.name ?? pending.pickerId;
+  const buttons = pending.revealed
+    .map(
+      (card) =>
+        `<button data-role="harvest-choice" data-card-id="${card.id}" title="${getCardKindLabelZh(card.kind)}">
+          <img class="card-icon" src="${ASSET_BASE}/cards/${card.kind}.png" alt="${getCardKindLabelZh(card.kind)}" />
+        </button>`
+    )
+    .join("");
+
+  return `
+    <div class="status">五谷丰登：当前由 ${pickerName} 选牌（剩余 ${pending.revealed.length} 张）。</div>
+    <div class="hand-list">${buttons}</div>
+  `;
+}
+
 function renderHumanResponsePanel(pending: PendingHumanResponse): string {
   const allowLabel =
     pending.kind === "blade-follow-up"
@@ -837,21 +970,21 @@ function getFollowupResponseAfterNullify(state: Game, pending: PendingHumanRespo
       message: "是否打出【杀】响应【决斗】？",
       action: pending.action,
       previewCardEventMessage: pending.previewCardEventMessage,
-      allowRespond: canRespondWithSlash(state, human.id)
+      allowRespond: canRespondWithSlash(state, human.id) || canAttemptJijiangSlashResponse(state, human.id)
     };
   }
 
-  if (kind === "barbarian") {
+  if (kind === "barbarian" && pending.action.targetId === human.id) {
     return {
       kind: "slash",
       message: "是否打出【杀】响应【南蛮入侵】？",
       action: pending.action,
       previewCardEventMessage: pending.previewCardEventMessage,
-      allowRespond: canRespondWithSlash(state, human.id)
+      allowRespond: canRespondWithSlash(state, human.id) || canAttemptJijiangSlashResponse(state, human.id)
     };
   }
 
-  if (kind === "archery") {
+  if (kind === "archery" && pending.action.targetId === human.id) {
     return {
       kind: "dodge",
       message: "是否打出【闪】响应【万箭齐发】？",
@@ -875,8 +1008,30 @@ function buildCardEventPreviewMessage(state: Game, action: TurnAction, inferredK
   }
 
   const target = action.targetId ? state.players.find((player) => player.id === action.targetId) : null;
+  if (inferredKind === "slash" && target) {
+    return `${actor.name} 对 ${target.name} 使用杀`;
+  }
+
   if (inferredKind === "duel" && target) {
     return `${actor.name} 对 ${target.name} 使用决斗`;
+  }
+
+  if (inferredKind === "snatch" && target) {
+    return `${actor.name} 对 ${target.name} 使用顺手牵羊`;
+  }
+
+  if (inferredKind === "dismantle" && target) {
+    return `${actor.name} 对 ${target.name} 使用过河拆桥`;
+  }
+
+  if (inferredKind === "collateral" && target) {
+    const secondary = action.secondaryTargetId
+      ? state.players.find((player) => player.id === action.secondaryTargetId)
+      : null;
+    if (secondary) {
+      return `${actor.name} 对 ${target.name} 使用借刀杀人，指定 ${secondary.name} 为目标`;
+    }
+    return `${actor.name} 对 ${target.name} 使用借刀杀人`;
   }
 
   if (inferredKind === "barbarian") {
@@ -887,6 +1042,18 @@ function buildCardEventPreviewMessage(state: Game, action: TurnAction, inferredK
     return `${actor.name} 使用万箭齐发`;
   }
 
+  if (inferredKind === "taoyuan") {
+    return `${actor.name} 使用桃园结义`;
+  }
+
+  if (inferredKind === "harvest") {
+    return `${actor.name} 使用五谷丰登`;
+  }
+
+  if (inferredKind === "ex_nihilo") {
+    return `${actor.name} 使用无中生有`;
+  }
+
   return null;
 }
 
@@ -894,8 +1061,252 @@ function mayHaveAnyNullifyResponder(state: Game): boolean {
   return state.players.some((player) => player.alive && canRespondWithNullify(state, player.id));
 }
 
+function getNullifyPromptTargetIds(state: Game, action: TurnAction, kind: NonNullable<PendingHumanResponse["nullifyTrickKind"]>): string[] {
+  if (action.type !== "play-card") {
+    return [];
+  }
+
+  if (kind === "barbarian" || kind === "archery") {
+    return action.targetId ? [action.targetId] : [];
+  }
+
+  if (kind === "taoyuan" || kind === "harvest") {
+    return action.targetId ? [action.targetId] : [];
+  }
+
+  return action.targetId ? [action.targetId] : [];
+}
+
+function buildNullifyPromptMessage(
+  state: Game,
+  kind: NonNullable<PendingHumanResponse["nullifyTrickKind"]>,
+  round: number,
+  targetId?: string,
+  targetIds?: string[],
+  sourceId?: string,
+  playedCount = 0,
+  playedByNames: string[] = []
+): string {
+  const kindLabel = getCardKindLabelZh(kind);
+  const progressLabel = getNullifyTargetProgress(state, kind, sourceId, targetId);
+  const playedCountLabel = `（已打出${playedCount}张无懈）`;
+  const playedByLabel = `（出牌者：${playedByNames.length > 0 ? playedByNames.join("、") : "无"}）`;
+  const shouldShowTarget =
+    !!targetId && (kind === "barbarian" || kind === "archery" || kind === "taoyuan" || kind === "harvest" || (targetIds?.length ?? 0) > 1);
+  if (!shouldShowTarget) {
+    return `无懈链第${round}轮：是否打出【无懈可击】响应 ${kindLabel}${progressLabel}${playedCountLabel}${playedByLabel}？`;
+  }
+
+  const target = state.players.find((player) => player.id === targetId);
+  return `无懈链第${round}轮：是否打出【无懈可击】响应 ${kindLabel}（目标：${target?.name ?? targetId}）${progressLabel}${playedCountLabel}${playedByLabel}？`;
+}
+
+function getNullifyTargetProgress(
+  state: Game,
+  kind: NonNullable<PendingHumanResponse["nullifyTrickKind"]>,
+  sourceId?: string,
+  targetId?: string
+): string {
+  if (!sourceId) {
+    return "";
+  }
+
+  const ordered = getAlivePlayersFromWeb(state, sourceId);
+  if (ordered.length === 0) {
+    return "";
+  }
+
+  const targetIds =
+    kind === "barbarian" || kind === "archery"
+      ? ordered.filter((player) => player.id !== sourceId).map((player) => player.id)
+      : kind === "taoyuan" || kind === "harvest"
+        ? ordered.map((player) => player.id)
+        : targetId
+          ? [targetId]
+          : [];
+
+  if (targetIds.length <= 1 || !targetId) {
+    return "";
+  }
+
+  const index = targetIds.findIndex((id) => id === targetId);
+  if (index < 0) {
+    return "（按座次顺时针逐目标结算）";
+  }
+
+  return `（第${index + 1}/${targetIds.length}目标）`;
+}
+
+function getRemainingNullifyAfterQueued(state: Game, playerId: string, queuedTrueCount: number): number {
+  const player = state.players.find((candidate) => candidate.id === playerId);
+  if (!player || !player.alive) {
+    return 0;
+  }
+
+  const total = player.hand.reduce((count, card) => (card.kind === "nullify" ? count + 1 : count), 0);
+  return Math.max(0, total - queuedTrueCount);
+}
+
+function getAlivePlayersFromWeb(state: Game, sourceId: string): PlayerState[] {
+  const alive = state.players.filter((player) => player.alive);
+  if (alive.length === 0) {
+    return [];
+  }
+
+  const startIndex = alive.findIndex((player) => player.id === sourceId);
+  if (startIndex < 0) {
+    return alive;
+  }
+
+  return alive.map((_, offset) => alive[(startIndex + offset) % alive.length]!);
+}
+
+function isSameCampWeb(left: PlayerState["identity"], right: PlayerState["identity"]): boolean {
+  if (left === "lord" || left === "loyalist") {
+    return right === "lord" || right === "loyalist";
+  }
+
+  if (left === "rebel") {
+    return right === "rebel";
+  }
+
+  return right === "renegade";
+}
+
+function shouldPlayNullifyWeb(
+  state: Game,
+  responder: PlayerState,
+  trickKind: NonNullable<PendingHumanResponse["nullifyTrickKind"]>,
+  target: PlayerState,
+  currentlyNegated: boolean
+): boolean {
+  if (state.nullifyResponsePolicy === "seat-order") {
+    return true;
+  }
+
+  const beneficialToTarget = trickKind === "taoyuan" || trickKind === "harvest" || trickKind === "ex_nihilo";
+  if (!currentlyNegated) {
+    return beneficialToTarget
+      ? !isSameCampWeb(responder.identity, target.identity)
+      : isSameCampWeb(responder.identity, target.identity);
+  }
+
+  return beneficialToTarget
+    ? isSameCampWeb(responder.identity, target.identity)
+    : !isSameCampWeb(responder.identity, target.identity);
+}
+
+function getNullifyChainProgress(
+  state: Game,
+  pending: PendingHumanResponse
+): {
+  shouldPromptHuman: boolean;
+  playedCount: number;
+  playedByNames: string[];
+} {
+  if (!pending.nullifySourceId || !pending.nullifyTargetId) {
+    return { shouldPromptHuman: false, playedCount: 0, playedByNames: [] };
+  }
+
+  const nullifyKind = pending.nullifyTrickKind;
+  if (!nullifyKind) {
+    return { shouldPromptHuman: false, playedCount: 0, playedByNames: [] };
+  }
+
+  const source = state.players.find((player) => player.id === pending.nullifySourceId && player.alive);
+  const target = state.players.find((player) => player.id === pending.nullifyTargetId && player.alive);
+  const human = getHumanPlayer(state);
+  if (!source || !target || !human.alive) {
+    return { shouldPromptHuman: false, playedCount: 0, playedByNames: [] };
+  }
+
+  const remainingNullifyByPlayer = new Map<string, number>();
+  for (const player of state.players) {
+    if (!player.alive) {
+      continue;
+    }
+
+    remainingNullifyByPlayer.set(
+      player.id,
+      player.hand.reduce((count, card) => (card.kind === "nullify" ? count + 1 : count), 0)
+    );
+  }
+
+  const decided = pending.nullifyChosenDecisions ?? [];
+  let decidedIndex = 0;
+  let negated = false;
+  let playedCount = 0;
+  const playedByNames: string[] = [];
+
+  while (true) {
+    let played = false;
+    for (const responder of getAlivePlayersFromWeb(state, source.id)) {
+      const remaining = remainingNullifyByPlayer.get(responder.id) ?? 0;
+      if (remaining <= 0) {
+        continue;
+      }
+
+      if (!shouldPlayNullifyWeb(state, responder, nullifyKind, target, negated)) {
+        continue;
+      }
+
+      if (responder.id === human.id) {
+        if (decidedIndex >= decided.length) {
+          return {
+            shouldPromptHuman: true,
+            playedCount,
+            playedByNames
+          };
+        }
+
+        const choosePlay = decided[decidedIndex] === true;
+        decidedIndex += 1;
+        if (!choosePlay) {
+          continue;
+        }
+      }
+
+      remainingNullifyByPlayer.set(responder.id, Math.max(0, remaining - 1));
+      negated = !negated;
+      played = true;
+      playedCount += 1;
+      playedByNames.push(responder.name);
+      break;
+    }
+
+    if (!played) {
+      break;
+    }
+  }
+
+  return {
+    shouldPromptHuman: false,
+    playedCount,
+    playedByNames
+  };
+}
+
 function render(): void {
   if (!gameStarted) {
+    const manualInitialHandSelects = manualInitialHandKinds
+      .slice(0, 4)
+      .map(
+        (kind, index) => `
+          <label class="header-control">
+            手牌${index + 1}
+            <select data-role="manual-hand-kind" data-index="${index}" ${manualInitialHandMode ? "" : "disabled"}>
+              ${Object.entries(CARD_KIND_LABEL_ZH)
+                .map(
+                  ([cardKind, label]) =>
+                    `<option value="${cardKind}" ${cardKind === kind ? "selected" : ""}>${label}</option>`
+                )
+                .join("")}
+            </select>
+          </label>
+        `
+      )
+      .join("");
+
     app.innerHTML = `
       <main class="setup-page-layout">
         <section class="panel setup-page-panel">
@@ -936,6 +1347,14 @@ function render(): void {
                 ).join("")}
               </select>
             </label>
+            <label class="header-control">
+              <span>测试模式：手动初始手牌</span>
+              <select data-role="manual-hand-mode">
+                <option value="off" ${manualInitialHandMode ? "" : "selected"}>关闭</option>
+                <option value="on" ${manualInitialHandMode ? "selected" : ""}>开启</option>
+              </select>
+            </label>
+            ${manualInitialHandSelects}
           </div>
           <div class="setup-actions-row">
             <button data-role="random-human" ${rosterMode === "pick-human" ? "" : "disabled"}>随机我的武将</button>
@@ -952,7 +1371,18 @@ function render(): void {
   const actor = game.players.find((player) => player.id === game.currentPlayerId);
   const pendingTuxiChoice = getPendingTuxiChoice(game);
   const pendingLuoyiChoice = isPendingLuoyiChoice(game);
+  const pendingManualDiscard = getPendingManualDiscardChoice(game);
+  const pendingHarvestChoiceRaw = getPendingHarvestChoice(game);
+  const pendingHarvestChoice =
+    pendingHarvestChoiceRaw && pendingHarvestChoiceRaw.pickerId === getHumanPlayer(game).id ? pendingHarvestChoiceRaw : null;
   const pendingResponse = pendingHumanResponse;
+
+  if (pendingManualDiscard) {
+    const handIds = new Set(getHumanPlayer(game).hand.map((card) => card.id));
+    selectedDiscardCardIds = selectedDiscardCardIds.filter((cardId) => handIds.has(cardId)).slice(0, pendingManualDiscard.needCount);
+  } else {
+    selectedDiscardCardIds = [];
+  }
 
   if (pendingTuxiChoice) {
     const validIds = new Set(pendingTuxiChoice.candidates.map((candidate) => candidate.id));
@@ -974,6 +1404,7 @@ function render(): void {
     activeSkillModeId = null;
     selectedCardId = null;
     pendingPrimaryTargetId = null;
+    pendingSecondaryTargetId = null;
     pendingZoneChoiceActions = [];
     previewTargetIds = [];
   }
@@ -985,12 +1416,14 @@ function render(): void {
   if (selectedCardId && !handCardIds.has(selectedCardId)) {
     selectedCardId = null;
     pendingPrimaryTargetId = null;
+    pendingSecondaryTargetId = null;
     pendingZoneChoiceActions = [];
     pendingZoneCardChoiceActions = [];
   }
 
   if (!selectedCardId && pendingPrimaryTargetId) {
     pendingPrimaryTargetId = null;
+    pendingSecondaryTargetId = null;
   }
 
   if (!selectedCardId && pendingZoneChoiceActions.length > 0) {
@@ -1017,18 +1450,26 @@ function render(): void {
             return sourceCardId === null || !handCardIds.has(sourceCardId);
           })
         : [];
-  const directTargetActionCandidates = pendingPrimaryTargetId
+  const directTargetActionCandidates = pendingPrimaryTargetId && pendingSecondaryTargetId
     ? selectedCardActions.filter(
         (action) =>
           action.type === "play-card" &&
           action.targetId === pendingPrimaryTargetId &&
-          Boolean(action.secondaryTargetId)
+          action.secondaryTargetId === pendingSecondaryTargetId &&
+          Boolean(action.tertiaryTargetId)
       )
+    : pendingPrimaryTargetId
+      ? selectedCardActions.filter(
+          (action) =>
+            action.type === "play-card" &&
+            action.targetId === pendingPrimaryTargetId &&
+            Boolean(action.secondaryTargetId)
+        )
     : selectedCardActions.filter((action) => action.type === "play-card" && Boolean(action.targetId));
   let selectableTargetIds = Array.from(
     new Set(
       directTargetActionCandidates
-        .map((action) => (pendingPrimaryTargetId ? action.secondaryTargetId : action.targetId))
+        .map((action) => (pendingPrimaryTargetId && pendingSecondaryTargetId ? action.tertiaryTargetId : pendingPrimaryTargetId ? action.secondaryTargetId : action.targetId))
         .filter((targetId): targetId is string => Boolean(targetId))
     )
   );
@@ -1043,7 +1484,7 @@ function render(): void {
   const humanJudgmentSummary = getJudgmentSummary(humanPlayer);
   const humanIdentityLabel = IDENTITY_LABEL_ZH[humanPlayer.identity];
   const selfIsTargeted = previewTargetIds.includes(humanPlayer.id);
-  const selfIsPrimarySelected = pendingPrimaryTargetId === humanPlayer.id;
+  const selfIsPrimarySelected = pendingPrimaryTargetId === humanPlayer.id || pendingSecondaryTargetId === humanPlayer.id;
   const selfIsSelectable = selectableTargetIds.includes(humanPlayer.id);
   const selfRowClass = [
     "player-row",
@@ -1083,6 +1524,16 @@ function render(): void {
               ? `<section class="center-response">
               <div class="center-log-title">响应窗口</div>
               <div class="action-list response-inline">${renderHumanResponsePanel(pendingResponse)}</div>
+            </section>`
+              : pendingHarvestChoice
+                ? `<section class="center-response">
+              <div class="center-log-title">五谷丰登</div>
+              <div class="action-list response-inline">${renderHarvestChoicePanel(pendingHarvestChoice)}</div>
+            </section>`
+              : pendingManualDiscard
+                ? `<section class="center-response">
+              <div class="center-log-title">弃牌阶段</div>
+              <div class="action-list response-inline">${renderManualDiscardPanel(pendingManualDiscard)}</div>
             </section>`
               : pendingTuxiChoice
                 ? `<section class="center-response">
@@ -1142,6 +1593,8 @@ function render(): void {
   bindZoneChoiceButtons();
   bindZoneCardChoiceButtons();
   bindInlineEndPlayButton(endPlayAction);
+  bindManualDiscardButtons();
+  bindHarvestChoiceButtons();
   adjustSkillPopoverDirectionByViewport();
   scrollEventLogToLatest();
 }
@@ -1289,7 +1742,8 @@ function renderZoneCardChoiceActions(actions: PlayCardAction[]): string {
     .map(
       (action, index) =>
         `<button data-role="zone-card-choice" data-index="${index}" data-card-id="${action.targetCardId ?? ""}">${formatTargetCardChoiceLabel(
-          action
+          action,
+          game
         )}</button>`
     )
     .join("");
@@ -1297,9 +1751,32 @@ function renderZoneCardChoiceActions(actions: PlayCardAction[]): string {
   return `<div class="zone-choice-list">${buttons}</div>`;
 }
 
-function formatTargetCardChoiceLabel(action: PlayCardAction): string {
+function formatTargetCardChoiceLabel(action: PlayCardAction, state: Game): string {
   const zoneLabel = action.targetZone === "judgment" ? "判定" : action.targetZone === "equipment" ? "装备" : "手牌";
-  return `${zoneLabel}：${action.targetCardId ?? "未知牌"}`;
+  if (!action.targetId || !action.targetCardId) {
+    return `${zoneLabel}：${action.targetCardId ?? "未知牌"}`;
+  }
+
+  const target = state.players.find((player) => player.id === action.targetId);
+  if (!target) {
+    return `${zoneLabel}：${action.targetCardId}`;
+  }
+
+  let cardKind: string | null = null;
+  if (action.targetZone === "equipment") {
+    const equipmentCards = [
+      target.equipment.weapon,
+      target.equipment.armor,
+      target.equipment.horsePlus,
+      target.equipment.horseMinus
+    ].filter((card): card is Card => Boolean(card));
+    cardKind = equipmentCards.find((card) => card.id === action.targetCardId)?.kind ?? null;
+  } else if (action.targetZone === "judgment") {
+    cardKind = target.judgmentZone.delayedTricks.find((card) => card.id === action.targetCardId)?.kind ?? null;
+  }
+
+  const cardLabel = cardKind ? getCardKindLabelZh(cardKind) : action.targetCardId;
+  return `${zoneLabel}：${cardLabel}`;
 }
 
 function filterActionsBySkillMode(actions: TurnAction[], modeId: string | null): TurnAction[] {
@@ -1449,7 +1926,7 @@ function renderSelfSkillToolbar(state: Game, allLegalActions: TurnAction[], curr
 }
 
 function isSelfImmediateCastCard(kind: string | null): boolean {
-  return kind === "ex_nihilo" || kind === "lightning";
+  return kind === "ex_nihilo" || kind === "lightning" || kind === "peach";
 }
 
 function getOpponentSeatPosition(index: number, seatCount: number): { left: number; top: number } {
@@ -1601,29 +2078,18 @@ function getSkillModeLabel(modeId: string): string {
 
 function renderHand(hand: Card[], legalActions: TurnAction[], currentSelectedCardId: string | null): string {
   if (hand.length === 0) {
-    return "<div class=\"hand-card\">当前没有手牌</div>";
+    return "";
   }
 
-  const cardActionCount = new Map<string, number>();
-  for (const action of legalActions) {
-    const sourceCardId = getActionSourceCardId(action);
-    if (!sourceCardId) {
-      continue;
-    }
-
-    cardActionCount.set(sourceCardId, (cardActionCount.get(sourceCardId) ?? 0) + 1);
-  }
+  const pendingManualDiscard = getPendingManualDiscardChoice(game);
 
   return hand
     .map(
-      (card) => `
-      <button class="hand-card ${card.id === currentSelectedCardId ? "selected" : ""}" data-role="hand-card" data-card-id="${card.id}">
+      (card, index) => `
+      <button class="hand-card ${
+        (pendingManualDiscard && selectedDiscardCardIds.includes(card.id)) || card.id === currentSelectedCardId ? "selected" : ""
+      }" data-role="hand-card" data-card-id="${card.id}" style="z-index:${index + 1}" title="${getCardKindLabelZh(card.kind)}">
         <img class="card-icon" src="${ASSET_BASE}/cards/${card.kind}.png" alt="${getCardKindLabelZh(card.kind)}" />
-        <div>
-          <div class="card-title">${getCardKindLabelZh(card.kind)}</div>
-          <div class="card-meta">${card.suit ?? ""} ${card.point ?? ""} · ${card.id}</div>
-          <div class="card-meta">可选目标 ${cardActionCount.get(card.id) ?? 0}</div>
-        </div>
       </button>
     `
     )
@@ -1718,7 +2184,8 @@ function renderEvents(state: Game, pendingPreviewMessage: string | undefined = u
     .slice(start)
     .map((event) => {
       const style = EVENT_STYLE[event.type] ?? { tag: event.type.toUpperCase() };
-      return `<li><span class="log-tag">[${style.tag}]</span>${localizeEventMessage(event.message)}</li>`;
+      const relatedClass = isHumanRelatedEventMessage(state, event.message) ? " log-item-human" : "";
+      return `<li class="log-item${relatedClass}"><span class="log-tag">[${style.tag}]</span>${formatEventLogMessage(state, event.message)}</li>`;
     })
     .join("");
 
@@ -1726,7 +2193,37 @@ function renderEvents(state: Game, pendingPreviewMessage: string | undefined = u
     return rendered;
   }
 
-  return `${rendered}<li><span class="log-tag">[${EVENT_STYLE.card.tag}]</span>${localizeEventMessage(pendingPreviewMessage)}</li>`;
+  const pendingRelatedClass = isHumanRelatedEventMessage(state, pendingPreviewMessage) ? " log-item-human" : "";
+  return `${rendered}<li class="log-item${pendingRelatedClass}"><span class="log-tag">[${EVENT_STYLE.card.tag}]</span>${formatEventLogMessage(state, pendingPreviewMessage)}</li>`;
+}
+
+function isHumanRelatedEventMessage(state: Game, message: string): boolean {
+  const human = getHumanPlayer(state);
+  if (!human.name) {
+    return false;
+  }
+
+  return localizeEventMessage(message).includes(human.name);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function formatEventLogMessage(state: Game, message: string): string {
+  const localized = localizeEventMessage(message);
+  const escapedMessage = escapeHtml(localized);
+  const playerNames = state.players
+    .map((player) => player.name)
+    .filter((name): name is string => Boolean(name))
+    .sort((left, right) => right.length - left.length);
+
+  if (playerNames.length === 0) {
+    return escapedMessage;
+  }
+
+  const pattern = new RegExp(playerNames.map((name) => escapeRegExp(name)).join("|"), "g");
+  return escapedMessage.replace(pattern, (matched) => `<span class="log-player">${matched}</span>`);
 }
 
 function describeAction(state: Game, action: TurnAction): string {
@@ -1848,6 +2345,10 @@ function getActionPreviewTargets(action: TurnAction): string[] {
     ids.push(action.secondaryTargetId);
   }
 
+  if (action.tertiaryTargetId) {
+    ids.push(action.tertiaryTargetId);
+  }
+
   return ids;
 }
 
@@ -1878,6 +2379,8 @@ function bindGlobalButtons(): void {
   const identityModeSelect = app.querySelector<HTMLSelectElement>("select[data-role='identity-mode']");
   const humanIdentitySelect = app.querySelector<HTMLSelectElement>("select[data-role='human-identity']");
   const humanGeneralSelect = app.querySelector<HTMLSelectElement>("select[data-role='human-general']");
+  const manualHandModeSelect = app.querySelector<HTMLSelectElement>("select[data-role='manual-hand-mode']");
+  const manualHandKindSelects = app.querySelectorAll<HTMLSelectElement>("select[data-role='manual-hand-kind']");
 
   rosterModeSelect?.addEventListener("change", () => {
     const nextMode = rosterModeSelect.value as RosterMode;
@@ -1905,6 +2408,25 @@ function bindGlobalButtons(): void {
     preferredHumanGeneralId = humanGeneralSelect.value;
     render();
     ensureAutoLoop();
+  });
+
+  manualHandModeSelect?.addEventListener("change", () => {
+    manualInitialHandMode = manualHandModeSelect.value === "on";
+    render();
+    ensureAutoLoop();
+  });
+
+  manualHandKindSelects.forEach((select) => {
+    select.addEventListener("change", () => {
+      const index = Number(select.dataset.index);
+      if (!Number.isInteger(index) || index < 0 || index >= manualInitialHandKinds.length) {
+        return;
+      }
+
+      manualInitialHandKinds[index] = select.value as Card["kind"];
+      render();
+      ensureAutoLoop();
+    });
   });
 
   randomHumanBtn?.addEventListener("click", () => {
@@ -1984,6 +2506,7 @@ function bindSkillButtons(allLegalActions: TurnAction[]): void {
       previewTargetIds = [];
       selectedCardId = null;
       pendingPrimaryTargetId = null;
+      pendingSecondaryTargetId = null;
       pendingZoneChoiceActions = [];
       render();
       ensureAutoLoop();
@@ -2054,6 +2577,34 @@ function bindHumanResponseButtons(): void {
       }
       if (current.kind === "nullify") {
         queueResponseDecision(game, human.id, "nullify", enabled);
+        const queuedTrueCount = (current.nullifyQueuedTrueCount ?? 0) + (enabled ? 1 : 0);
+        const nextPending: PendingHumanResponse = {
+          ...current,
+          allowRespond: getRemainingNullifyAfterQueued(game, human.id, queuedTrueCount) > 0,
+          nullifyChosenDecisions: [...(current.nullifyChosenDecisions ?? []), enabled],
+          nullifyQueuedTrueCount: queuedTrueCount
+        };
+        const chainProgress = getNullifyChainProgress(game, nextPending);
+        if (chainProgress.shouldPromptHuman) {
+          const nextRound = chainProgress.playedCount + 1;
+          pendingHumanResponse = {
+            ...nextPending,
+            message: buildNullifyPromptMessage(
+              game,
+              current.nullifyTrickKind ?? "dismantle",
+              nextRound,
+              current.nullifyTargetId,
+              current.nullifyGroupTargetIds,
+              current.nullifySourceId,
+              chainProgress.playedCount,
+              chainProgress.playedByNames
+            )
+          };
+          render();
+          ensureAutoLoop();
+          return;
+        }
+
         if (!enabled) {
           const followup = getFollowupResponseAfterNullify(game, current);
           if (followup) {
@@ -2065,7 +2616,22 @@ function bindHumanResponseButtons(): void {
         }
         pendingHumanResponse = null;
         setResponsePreference(game, human.id, "nullify", false);
+        if (current.pendingHarvestCardId) {
+          chooseHarvestCard(game, current.pendingHarvestCardId);
+          clearResponseDecisionState(game);
+          runAutoUntilHumanChoice();
+          render();
+          ensureAutoLoop();
+          return;
+        }
+        if (current.action.type === "play-card" && current.action.cardId.startsWith("__pending_harvest__")) {
+          runAutoUntilHumanChoice();
+          render();
+          ensureAutoLoop();
+          return;
+        }
         applyAction(game, current.action);
+        clearResponseDecisionState(game);
         runAutoUntilHumanChoice();
         render();
         ensureAutoLoop();
@@ -2082,6 +2648,7 @@ function bindHumanResponseButtons(): void {
       } else if (
         current.kind === "slash" ||
         current.kind === "dodge" ||
+        current.kind === "double-sword" ||
         current.kind === "peach" ||
         current.kind === "hujia" ||
         current.kind === "jijiang"
@@ -2125,6 +2692,18 @@ function inferActionCardKindForResponse(state: Game, action: TurnAction): string
     return "dismantle";
   }
 
+  if (action.cardId.startsWith("__pending_barbarian__")) {
+    return "barbarian";
+  }
+
+  if (action.cardId.startsWith("__pending_archery__")) {
+    return "archery";
+  }
+
+  if (action.cardId.startsWith("__pending_harvest__")) {
+    return "harvest";
+  }
+
   if (action.cardId.startsWith("__virtual_guose__")) {
     return "indulgence";
   }
@@ -2149,19 +2728,49 @@ function getPendingHumanResponseForAiAction(state: Game, action: TurnAction): Pe
 
   const previewCardEventMessage = buildCardEventPreviewMessage(state, action, kind);
 
-  const nullifySingleTargetKinds = new Set(["dismantle", "snatch", "duel", "collateral", "indulgence", "lightning"]);
+  const nullifySingleTargetKinds = new Set(["dismantle", "snatch", "duel", "collateral"]);
   const nullifyGroupKinds = new Set(["barbarian", "archery", "taoyuan", "harvest"]);
-  const canNullifyCurrentAction =
-    (nullifySingleTargetKinds.has(kind) && action.targetId === human.id) ||
-    nullifyGroupKinds.has(kind);
+  const canNullifyCurrentAction = nullifySingleTargetKinds.has(kind) || nullifyGroupKinds.has(kind);
 
   if (canNullifyCurrentAction) {
-    return {
+    const nullifyTrickKind = kind as PendingHumanResponse["nullifyTrickKind"];
+    const nullifyTargetIds = getNullifyPromptTargetIds(state, action, nullifyTrickKind);
+    const nullifyTargetId = nullifyTargetIds[0] ?? action.targetId;
+    const forceShowForPendingHarvest = action.cardId.startsWith("__pending_harvest__");
+    const forceShowForPendingMassTrick =
+      action.cardId.startsWith("__pending_barbarian__") || action.cardId.startsWith("__pending_archery__");
+    const basePending: PendingHumanResponse = {
       kind: "nullify",
-      message: `是否打出【无懈可击】响应 ${getCardKindLabelZh(kind)}？`,
       action,
       previewCardEventMessage,
-      allowRespond: canRespondWithNullify(state, human.id)
+      allowRespond: canRespondWithNullify(state, human.id),
+      nullifyTrickKind,
+      nullifySourceId: action.actorId,
+      nullifyTargetId,
+      nullifyChosenDecisions: [],
+      nullifyGroupTargetIds: nullifyTargetIds,
+      nullifyGroupCursor: 0,
+      nullifyQueuedTrueCount: 0
+    };
+
+    const chainProgress = getNullifyChainProgress(state, basePending);
+    if (!chainProgress.shouldPromptHuman && !forceShowForPendingHarvest && !forceShowForPendingMassTrick) {
+      return null;
+    }
+
+    return {
+      ...basePending,
+      allowRespond: chainProgress.shouldPromptHuman && canRespondWithNullify(state, human.id),
+      message: buildNullifyPromptMessage(
+        state,
+        nullifyTrickKind,
+        chainProgress.playedCount + 1,
+        nullifyTargetId,
+        nullifyTargetIds,
+        action.actorId,
+        chainProgress.playedCount,
+        chainProgress.playedByNames
+      )
     };
   }
 
@@ -2170,7 +2779,36 @@ function getPendingHumanResponseForAiAction(state: Game, action: TurnAction): Pe
     return null;
   }
 
-  if (kind === "slash" && action.targetId === human.id && canRespondWithDodge(state, human.id)) {
+  if (kind === "slash" && action.targetId === human.id) {
+    const source = state.players.find((player) => player.id === action.actorId);
+    if (
+      source &&
+      source.equipment.weapon?.kind === "weapon_double_sword" &&
+      source.gender !== human.gender &&
+      human.hand.length > 0
+    ) {
+      return {
+        kind: "double-sword",
+        message: `是否弃置1张手牌响应【雌雄双股剑】？（否则${source.name}摸1张牌）`,
+        action,
+        previewCardEventMessage,
+        allowRespond: true
+      };
+    }
+
+    const armorIgnoredByQinggang = source?.equipment.weapon?.kind === "weapon_qinggang_sword";
+    const sourceMayDisableDodgeByTieqi = source ? hasSkillOnPlayer(state, source.id, STANDARD_SKILL_IDS.machaoTieqi) : false;
+    if (!armorIgnoredByQinggang && !sourceMayDisableDodgeByTieqi && human.equipment.armor?.kind === "armor_eight_diagram") {
+      const judgedAsDodge = prepareEightDiagramJudge(state, human.id);
+      if (judgedAsDodge === true) {
+        return null;
+      }
+    }
+
+    if (!canRespondWithDodge(state, human.id)) {
+      return null;
+    }
+
     return {
       kind: "dodge",
       message: `是否打出【闪】响应这张【杀】？`,
@@ -2179,7 +2817,7 @@ function getPendingHumanResponseForAiAction(state: Game, action: TurnAction): Pe
     };
   }
 
-  if (kind === "archery" && canRespondWithDodge(state, human.id)) {
+  if (kind === "archery" && action.targetId === human.id && canRespondWithDodge(state, human.id)) {
     return {
       kind: "dodge",
       message: `是否打出【闪】响应【万箭齐发】？`,
@@ -2197,7 +2835,17 @@ function getPendingHumanResponseForAiAction(state: Game, action: TurnAction): Pe
     };
   }
 
-  if (kind === "barbarian" && canRespondWithSlash(state, human.id)) {
+  if (kind === "duel" && action.targetId === human.id && canAttemptJijiangSlashResponse(state, human.id)) {
+    return {
+      kind: "slash",
+      message: `是否打出【杀】响应【决斗】？`,
+      action,
+      previewCardEventMessage,
+      allowRespond: true
+    };
+  }
+
+  if (kind === "barbarian" && action.targetId === human.id && canRespondWithSlash(state, human.id)) {
     return {
       kind: "slash",
       message: `是否打出【杀】响应【南蛮入侵】？`,
@@ -2206,11 +2854,31 @@ function getPendingHumanResponseForAiAction(state: Game, action: TurnAction): Pe
     };
   }
 
+  if (kind === "barbarian" && action.targetId === human.id && canAttemptJijiangSlashResponse(state, human.id)) {
+    return {
+      kind: "slash",
+      message: `是否打出【杀】响应【南蛮入侵】？`,
+      action,
+      previewCardEventMessage,
+      allowRespond: true
+    };
+  }
+
   const assistResponse = getPendingAssistResponseForAiAction(state, action, kind);
   if (assistResponse) {
     return {
       ...assistResponse,
       previewCardEventMessage
+    };
+  }
+
+  if (shouldPromptHumanPeachResponseForAiAction(state, action)) {
+    return {
+      kind: "peach",
+      message: "若有角色进入濒死，是否使用【桃】参与救援？",
+      action,
+      previewCardEventMessage,
+      allowRespond: canRespondWithPeach(state, human.id)
     };
   }
 
@@ -2224,6 +2892,25 @@ function getPendingHumanResponseForAiAction(state: Game, action: TurnAction): Pe
 function hasSkillOnPlayer(state: Game, playerId: string, skillId: string): boolean {
   const skills = state.skillSystem.playerSkills[playerId] ?? [];
   return skills.includes(skillId);
+}
+
+function canAttemptJijiangSlashResponse(state: Game, playerId: string): boolean {
+  const player = state.players.find((item) => item.id === playerId);
+  if (!player || !player.alive) {
+    return false;
+  }
+
+  if (player.identity !== "lord") {
+    return false;
+  }
+
+  if (!hasSkillOnPlayer(state, player.id, STANDARD_SKILL_IDS.liubeiJijiang)) {
+    return false;
+  }
+
+  return state.players.some(
+    (candidate) => candidate.alive && candidate.id !== player.id && getPlayerKingdomById(state, candidate.id) === "shu"
+  );
 }
 
 function getPendingAssistResponseForAiAction(state: Game, action: TurnAction, inferredKind: string): PendingHumanResponse | null {
@@ -2396,9 +3083,51 @@ function bindHandButtons(legalActions: TurnAction[]): void {
         return;
       }
 
+      const pendingManualDiscard = getPendingManualDiscardChoice(game);
+      if (pendingManualDiscard) {
+        if (selectedDiscardCardIds.includes(cardId)) {
+          selectedDiscardCardIds = selectedDiscardCardIds.filter((id) => id !== cardId);
+        } else if (selectedDiscardCardIds.length < pendingManualDiscard.needCount) {
+          selectedDiscardCardIds = [...selectedDiscardCardIds, cardId];
+        }
+        render();
+        ensureAutoLoop();
+        return;
+      }
+
+      if (selectedCardId === cardId && pendingPrimaryTargetId) {
+        const sourceActions = legalActions.filter(
+          (action) => action.type === "play-card" && getActionSourceCardId(action) === cardId
+        );
+        const confirmActions = pendingSecondaryTargetId
+          ? sourceActions.filter(
+              (action) =>
+                action.type === "play-card" &&
+                action.targetId === pendingPrimaryTargetId &&
+                action.secondaryTargetId === pendingSecondaryTargetId &&
+                !action.tertiaryTargetId
+            )
+          : sourceActions.filter(
+              (action) => action.type === "play-card" && action.targetId === pendingPrimaryTargetId && !action.secondaryTargetId
+            );
+
+        if (confirmActions.length > 0) {
+          const action = choosePreferredAction(confirmActions);
+          previewTargetIds = [];
+          selectedCardId = null;
+          pendingPrimaryTargetId = null;
+          pendingSecondaryTargetId = null;
+          pendingZoneChoiceActions = [];
+          pendingZoneCardChoiceActions = [];
+          executeHumanChosenAction(action);
+          return;
+        }
+      }
+
       if (!playableSourceIds.has(cardId)) {
         selectedCardId = cardId;
         pendingPrimaryTargetId = null;
+        pendingSecondaryTargetId = null;
         pendingZoneChoiceActions = [];
         previewTargetIds = [];
         render();
@@ -2408,6 +3137,7 @@ function bindHandButtons(legalActions: TurnAction[]): void {
 
       selectedCardId = selectedCardId === cardId ? null : cardId;
       pendingPrimaryTargetId = null;
+      pendingSecondaryTargetId = null;
       pendingZoneChoiceActions = [];
       pendingZoneCardChoiceActions = [];
       const selectedActions = selectedCardId
@@ -2429,24 +3159,29 @@ function bindHandButtons(legalActions: TurnAction[]): void {
           : null;
 
       const autoDirectAction =
-        immediateAction &&
+        selectedActions.find(
+          (action) =>
+            action.type === "play-card" &&
+            action.targetId === humanId &&
+            !action.secondaryTargetId &&
+            resolveActionCardKind(game, action) === "peach"
+        ) ??
+        (immediateAction &&
         ((!immediateAction.targetId && !immediateAction.secondaryTargetId) ||
           (immediateAction.targetId === humanId &&
             !immediateAction.secondaryTargetId &&
             isSelfImmediateCastCard(resolveActionCardKind(game, immediateAction))))
           ? immediateAction
-          : null;
+          : null);
 
       if (autoEquipAction) {
         previewTargetIds = [];
         selectedCardId = null;
         pendingPrimaryTargetId = null;
+        pendingSecondaryTargetId = null;
         pendingZoneChoiceActions = [];
         pendingZoneCardChoiceActions = [];
-        applyAction(game, autoEquipAction);
-        runAutoUntilHumanChoice();
-        render();
-        ensureAutoLoop();
+        executeHumanChosenAction(autoEquipAction);
         return;
       }
 
@@ -2454,12 +3189,10 @@ function bindHandButtons(legalActions: TurnAction[]): void {
         previewTargetIds = [];
         selectedCardId = null;
         pendingPrimaryTargetId = null;
+        pendingSecondaryTargetId = null;
         pendingZoneChoiceActions = [];
         pendingZoneCardChoiceActions = [];
-        applyAction(game, autoDirectAction);
-        runAutoUntilHumanChoice();
-        render();
-        ensureAutoLoop();
+        executeHumanChosenAction(autoDirectAction);
         return;
       }
 
@@ -2470,6 +3203,195 @@ function bindHandButtons(legalActions: TurnAction[]): void {
       ensureAutoLoop();
     });
   });
+}
+
+function bindManualDiscardButtons(): void {
+  const confirmButton = app.querySelector<HTMLButtonElement>("button[data-role='manual-discard-confirm']");
+  confirmButton?.addEventListener("click", () => {
+    const pending = getPendingManualDiscardChoice(game);
+    if (!pending) {
+      return;
+    }
+
+    if (selectedDiscardCardIds.length < pending.needCount) {
+      return;
+    }
+
+    discardSelectedCards(game, pending.actor.id, selectedDiscardCardIds.slice(0, pending.needCount));
+    selectedDiscardCardIds = [];
+    stepPhase(game);
+    runAutoUntilHumanChoice();
+    render();
+    ensureAutoLoop();
+  });
+}
+
+function bindHarvestChoiceButtons(): void {
+  const buttons = app.querySelectorAll<HTMLButtonElement>("button[data-role='harvest-choice']");
+  buttons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const cardId = button.dataset.cardId;
+      if (!cardId) {
+        return;
+      }
+
+      const human = getHumanPlayer(game);
+      if (!hasQueuedNullifyDecision(game, human.id)) {
+        const pendingNullify = getPendingHarvestNullifyResponse();
+        if (pendingNullify) {
+          pendingHumanResponse = pendingNullify;
+          render();
+          ensureAutoLoop();
+          return;
+        }
+      }
+
+      chooseHarvestCard(game, cardId);
+      clearResponseDecisionState(game);
+      runAutoUntilHumanChoice();
+      render();
+      ensureAutoLoop();
+    });
+  });
+}
+
+function getPendingHarvestNullifyResponse(cardId?: string): PendingHumanResponse | null {
+  const pendingHarvest = getPendingHarvestChoice(game);
+  if (!pendingHarvest) {
+    return null;
+  }
+
+  const syntheticAction: PlayCardAction = {
+    type: "play-card",
+    actorId: pendingHarvest.sourceId,
+    cardId: "__pending_harvest__",
+    targetId: pendingHarvest.pickerId
+  };
+
+  const pending = getPendingHumanResponseForAiAction(game, syntheticAction);
+  if (!pending || pending.kind !== "nullify") {
+    return null;
+  }
+
+  if (!cardId) {
+    return pending;
+  }
+
+  return {
+    ...pending,
+    pendingHarvestCardId: cardId
+  };
+}
+
+function hasQueuedNullifyDecision(state: Game, playerId: string): boolean {
+  const queue = state.responseDecisionQueueByPlayer[playerId]?.nullify;
+  return Array.isArray(queue) && queue.length > 0;
+}
+
+function queuePendingHarvestNullifyPrompt(): boolean {
+  if (pendingHumanResponse) {
+    return false;
+  }
+
+  const pendingHarvest = getPendingHarvestChoice(game);
+  if (!pendingHarvest) {
+    return false;
+  }
+
+  const human = getHumanPlayer(game);
+  if (pendingHarvest.pickerId !== human.id) {
+    return false;
+  }
+
+  if (hasQueuedNullifyDecision(game, human.id)) {
+    return false;
+  }
+
+  const pendingNullify = getPendingHarvestNullifyResponse();
+  if (!pendingNullify) {
+    return false;
+  }
+
+  pendingHumanResponse = pendingNullify;
+  return true;
+}
+
+function getPendingMassTrickNullifyResponse(action: PlayCardAction): PendingHumanResponse | null {
+  const isPendingMass = action.cardId.startsWith("__pending_barbarian__") || action.cardId.startsWith("__pending_archery__");
+  if (!isPendingMass) {
+    return null;
+  }
+
+  const human = getHumanPlayer(game);
+  if (!human.alive) {
+    return null;
+  }
+
+  const inferredKind = inferActionCardKindForResponse(game, action);
+  if (inferredKind !== "barbarian" && inferredKind !== "archery") {
+    return null;
+  }
+
+  const nullifyTrickKind = inferredKind as PendingHumanResponse["nullifyTrickKind"];
+  const nullifyTargetIds = getNullifyPromptTargetIds(game, action, nullifyTrickKind);
+  const nullifyTargetId = nullifyTargetIds[0] ?? action.targetId;
+  const previewCardEventMessage = buildCardEventPreviewMessage(game, action, inferredKind);
+
+  return {
+    kind: "nullify",
+    message: buildNullifyPromptMessage(game, nullifyTrickKind, 1, nullifyTargetId, nullifyTargetIds, action.actorId, 0, []),
+    action,
+    previewCardEventMessage,
+    allowRespond: canRespondWithNullify(game, human.id),
+    nullifyTrickKind,
+    nullifySourceId: action.actorId,
+    nullifyTargetId,
+    nullifyChosenDecisions: [],
+    nullifyGroupTargetIds: nullifyTargetIds,
+    nullifyGroupCursor: 0,
+    nullifyQueuedTrueCount: 0
+  };
+}
+
+function queuePendingMassTrickNullifyPrompt(action: PlayCardAction): boolean {
+  if (pendingHumanResponse) {
+    return false;
+  }
+
+  const pending = getPendingMassTrickNullifyResponse(action);
+  if (!pending) {
+    return false;
+  }
+
+  pendingHumanResponse = pending;
+  return true;
+}
+
+function autoChooseHarvestForAiIfNeeded(): boolean {
+  const pending = getPendingHarvestChoice(game);
+  if (!pending || pending.revealed.length === 0) {
+    return false;
+  }
+
+  const picker = game.players.find((player) => player.id === pending.pickerId);
+  if (!picker || !picker.alive || !picker.isAi) {
+    return false;
+  }
+
+  const pendingNullify = getPendingHarvestNullifyResponse(pending.revealed[0].id);
+  if (pendingNullify) {
+    pendingHumanResponse = pendingNullify;
+    return true;
+  }
+
+  chooseHarvestCard(game, pending.revealed[0].id);
+  clearResponseDecisionState(game);
+  return true;
+}
+
+function clearResponseDecisionState(state: Game): void {
+  state.responsePreferenceByPlayer = {};
+  state.responseDecisionQueueByPlayer = {};
 }
 
 function bindPlayerTargetButtons(selectedCardActions: TurnAction[]): void {
@@ -2503,6 +3425,28 @@ function bindPlayerTargetButtons(selectedCardActions: TurnAction[]): void {
         return;
       }
 
+      if (pendingPrimaryTargetId && pendingSecondaryTargetId) {
+        const tertiaryActions = selectedCardActions.filter(
+          (action) =>
+            action.type === "play-card" &&
+            action.targetId === pendingPrimaryTargetId &&
+            action.secondaryTargetId === pendingSecondaryTargetId &&
+            action.tertiaryTargetId === playerId
+        );
+
+        if (tertiaryActions.length > 0) {
+          const action = choosePreferredAction(tertiaryActions);
+          previewTargetIds = [];
+          selectedCardId = null;
+          pendingPrimaryTargetId = null;
+          pendingSecondaryTargetId = null;
+          pendingZoneChoiceActions = [];
+          pendingZoneCardChoiceActions = [];
+          executeHumanChosenAction(action);
+          return;
+        }
+      }
+
       if (pendingPrimaryTargetId) {
         const secondaryActions = selectedCardActions.filter(
           (action) =>
@@ -2510,21 +3454,29 @@ function bindPlayerTargetButtons(selectedCardActions: TurnAction[]): void {
         );
 
         if (secondaryActions.length > 0) {
-          const action = choosePreferredAction(secondaryActions);
-          previewTargetIds = [];
-          selectedCardId = null;
-          pendingPrimaryTargetId = null;
-          pendingZoneChoiceActions = [];
-          pendingZoneCardChoiceActions = [];
-          applyAction(game, action);
-          if (queuePendingBladeFollowUpPrompt()) {
+          const needsTertiaryActions = secondaryActions.filter((action) => Boolean(action.tertiaryTargetId));
+          if (needsTertiaryActions.length > 0) {
+            pendingSecondaryTargetId = playerId;
+            previewTargetIds = Array.from(
+              new Set(
+                needsTertiaryActions
+                  .map((action) => action.tertiaryTargetId)
+                  .filter((targetId): targetId is string => Boolean(targetId))
+              )
+            );
             render();
             ensureAutoLoop();
             return;
           }
-          runAutoUntilHumanChoice();
-          render();
-          ensureAutoLoop();
+
+          const action = choosePreferredAction(secondaryActions);
+          previewTargetIds = [];
+          selectedCardId = null;
+          pendingPrimaryTargetId = null;
+          pendingSecondaryTargetId = null;
+          pendingZoneChoiceActions = [];
+          pendingZoneCardChoiceActions = [];
+          executeHumanChosenAction(action);
           return;
         }
       }
@@ -2542,6 +3494,7 @@ function bindPlayerTargetButtons(selectedCardActions: TurnAction[]): void {
         pendingZoneChoiceActions = zoneCandidateActions;
         pendingZoneCardChoiceActions = [];
         pendingPrimaryTargetId = null;
+        pendingSecondaryTargetId = null;
         previewTargetIds = [playerId];
         render();
         ensureAutoLoop();
@@ -2552,6 +3505,7 @@ function bindPlayerTargetButtons(selectedCardActions: TurnAction[]): void {
         pendingZoneChoiceActions = [];
         pendingZoneCardChoiceActions = zoneCandidateActions;
         pendingPrimaryTargetId = null;
+        pendingSecondaryTargetId = null;
         previewTargetIds = [playerId];
         render();
         ensureAutoLoop();
@@ -2561,6 +3515,7 @@ function bindPlayerTargetButtons(selectedCardActions: TurnAction[]): void {
       const requiresSecondaryActions = primaryActions.filter((action) => action.secondaryTargetId);
       if (requiresSecondaryActions.length > 0) {
         pendingPrimaryTargetId = playerId;
+        pendingSecondaryTargetId = null;
         pendingZoneChoiceActions = [];
         pendingZoneCardChoiceActions = [];
         previewTargetIds = Array.from(
@@ -2579,17 +3534,10 @@ function bindPlayerTargetButtons(selectedCardActions: TurnAction[]): void {
       previewTargetIds = [];
       selectedCardId = null;
       pendingPrimaryTargetId = null;
+      pendingSecondaryTargetId = null;
       pendingZoneChoiceActions = [];
       pendingZoneCardChoiceActions = [];
-      applyAction(game, action);
-      if (queuePendingBladeFollowUpPrompt()) {
-        render();
-        ensureAutoLoop();
-        return;
-      }
-      runAutoUntilHumanChoice();
-      render();
-      ensureAutoLoop();
+      executeHumanChosenAction(action);
     });
   });
 }
@@ -2604,6 +3552,7 @@ function bindInlineEndPlayButton(endPlayAction: TurnAction | null): void {
     previewTargetIds = [];
     selectedCardId = null;
     pendingPrimaryTargetId = null;
+    pendingSecondaryTargetId = null;
     pendingZoneChoiceActions = [];
     pendingZoneCardChoiceActions = [];
     applyAction(game, endPlayAction);
@@ -2639,17 +3588,10 @@ function bindZoneChoiceButtons(): void {
       previewTargetIds = [];
       selectedCardId = null;
       pendingPrimaryTargetId = null;
+      pendingSecondaryTargetId = null;
       pendingZoneChoiceActions = [];
       pendingZoneCardChoiceActions = [];
-      applyAction(game, action);
-      if (queuePendingBladeFollowUpPrompt()) {
-        render();
-        ensureAutoLoop();
-        return;
-      }
-      runAutoUntilHumanChoice();
-      render();
-      ensureAutoLoop();
+      executeHumanChosenAction(action);
     });
   });
 }
@@ -2667,17 +3609,10 @@ function bindZoneCardChoiceButtons(): void {
       previewTargetIds = [];
       selectedCardId = null;
       pendingPrimaryTargetId = null;
+      pendingSecondaryTargetId = null;
       pendingZoneChoiceActions = [];
       pendingZoneCardChoiceActions = [];
-      applyAction(game, action);
-      if (queuePendingBladeFollowUpPrompt()) {
-        render();
-        ensureAutoLoop();
-        return;
-      }
-      runAutoUntilHumanChoice();
-      render();
-      ensureAutoLoop();
+      executeHumanChosenAction(action);
     });
   });
 }
@@ -2694,6 +3629,73 @@ function choosePreferredAction(actions: TurnAction[]): TurnAction {
   }
 
   return actions[0];
+}
+
+function executeHumanChosenAction(action: TurnAction): void {
+  const human = getHumanPlayer(game);
+  const inferredKind = inferActionCardKindForResponse(game, action);
+  const shouldSkipPreNullifyPromptForHumanGroupTrick =
+    action.type === "play-card" &&
+    action.actorId === human.id &&
+    !action.targetId &&
+    (inferredKind === "harvest" || inferredKind === "taoyuan" || inferredKind === "barbarian" || inferredKind === "archery");
+
+  if (!shouldSkipPreNullifyPromptForHumanGroupTrick) {
+    const pending = getPendingHumanResponseForAiAction(game, action);
+    if (pending?.kind === "nullify") {
+      pendingHumanResponse = pending;
+      render();
+      ensureAutoLoop();
+      return;
+    }
+  }
+
+  disableHumanAutoNullifyForAction(game, action);
+  applyAction(game, action);
+  clearResponseDecisionState(game);
+  if (queuePendingBladeFollowUpPrompt()) {
+    render();
+    ensureAutoLoop();
+    return;
+  }
+  if (action.type === "end-play-phase") {
+    stepPhase(game);
+  }
+  runAutoUntilHumanChoice();
+  render();
+  ensureAutoLoop();
+}
+
+function isNullifiableActionKind(kind: string | null): boolean {
+  if (!kind) {
+    return false;
+  }
+
+  return (
+    kind === "dismantle" ||
+    kind === "snatch" ||
+    kind === "duel" ||
+    kind === "barbarian" ||
+    kind === "archery" ||
+    kind === "taoyuan" ||
+    kind === "harvest" ||
+    kind === "ex_nihilo" ||
+    kind === "collateral"
+  );
+}
+
+function disableHumanAutoNullifyForAction(state: Game, action: TurnAction): void {
+  if (action.type !== "play-card") {
+    return;
+  }
+
+  const kind = inferActionCardKindForResponse(state, action);
+  if (!isNullifiableActionKind(kind)) {
+    return;
+  }
+
+  const human = getHumanPlayer(state);
+  setResponsePreference(state, human.id, "nullify", false);
 }
 
 function bindTargetActionButtons(selectedCardActions: TurnAction[], endPlayAction: TurnAction | null): void {
@@ -2731,20 +3733,8 @@ function bindTargetActionButtons(selectedCardActions: TurnAction[], endPlayActio
 
       const action = selectedCardActions[index];
       previewTargetIds = [];
-      applyAction(game, action);
-      if (queuePendingBladeFollowUpPrompt()) {
-        selectedCardId = null;
-        render();
-        ensureAutoLoop();
-        return;
-      }
-      if (action.type === "end-play-phase") {
-        stepPhase(game);
-      }
       selectedCardId = null;
-      runAutoUntilHumanChoice();
-      render();
-      ensureAutoLoop();
+      executeHumanChosenAction(action);
     });
   });
 
@@ -2767,7 +3757,33 @@ function runOneTick(): void {
     return;
   }
 
-  if (getPendingTuxiChoice(game) || isPendingLuoyiChoice(game) || pendingHumanResponse) {
+  const pendingMassAction = getPendingMassTrickAction(game);
+  if (pendingMassAction) {
+    if (queuePendingMassTrickNullifyPrompt(pendingMassAction)) {
+      return;
+    }
+
+    disableHumanAutoNullifyForAction(game, pendingMassAction);
+    applyAction(game, pendingMassAction);
+    clearResponseDecisionState(game);
+    return;
+  }
+
+  if (queuePendingHarvestNullifyPrompt()) {
+    return;
+  }
+
+  if (autoChooseHarvestForAiIfNeeded()) {
+    return;
+  }
+
+  if (
+    getPendingTuxiChoice(game) ||
+    isPendingLuoyiChoice(game) ||
+    pendingHumanResponse ||
+    getPendingManualDiscardChoice(game) ||
+    getPendingHarvestChoice(game)
+  ) {
     return;
   }
 
@@ -2796,7 +3812,9 @@ function runOneTick(): void {
     pendingHumanResponse = pending;
     return;
   }
+  disableHumanAutoNullifyForAction(game, action);
   applyAction(game, action);
+  clearResponseDecisionState(game);
   if (action.type === "end-play-phase") {
     stepPhase(game);
   }
@@ -2805,7 +3823,35 @@ function runOneTick(): void {
 function runAutoUntilHumanChoice(maxTicks = 500): void {
   let ticks = 0;
   while (!game.winner && ticks < maxTicks) {
-    if (getPendingTuxiChoice(game) || isPendingLuoyiChoice(game) || pendingHumanResponse) {
+    const pendingMassAction = getPendingMassTrickAction(game);
+    if (pendingMassAction) {
+      if (queuePendingMassTrickNullifyPrompt(pendingMassAction)) {
+        break;
+      }
+
+      disableHumanAutoNullifyForAction(game, pendingMassAction);
+      applyAction(game, pendingMassAction);
+      clearResponseDecisionState(game);
+      ticks += 1;
+      continue;
+    }
+
+    if (queuePendingHarvestNullifyPrompt()) {
+      break;
+    }
+
+    if (autoChooseHarvestForAiIfNeeded()) {
+      ticks += 1;
+      continue;
+    }
+
+    if (
+      getPendingTuxiChoice(game) ||
+      isPendingLuoyiChoice(game) ||
+      pendingHumanResponse ||
+      getPendingManualDiscardChoice(game) ||
+      getPendingHarvestChoice(game)
+    ) {
       break;
     }
 
@@ -2833,7 +3879,9 @@ function runAutoUntilHumanChoice(maxTicks = 500): void {
       pendingHumanResponse = pending;
       break;
     }
+    disableHumanAutoNullifyForAction(game, action);
     applyAction(game, action);
+    clearResponseDecisionState(game);
     if (action.type === "end-play-phase") {
       stepPhase(game);
     }
@@ -2857,7 +3905,12 @@ function ensureAutoLoop(): void {
       (actor && !actor.isAi && game.phase === "play") ||
       !!getPendingTuxiChoice(game) ||
       isPendingLuoyiChoice(game) ||
-      !!pendingHumanResponse;
+      !!pendingHumanResponse ||
+      !!getPendingManualDiscardChoice(game) ||
+      (() => {
+        const pendingHarvest = getPendingHarvestChoice(game);
+        return !!pendingHarvest && pendingHarvest.pickerId === getHumanPlayer(game).id;
+      })();
     if (!shouldWaitForHuman) {
       runAutoUntilHumanChoice();
       render();

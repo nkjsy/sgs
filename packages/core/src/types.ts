@@ -30,13 +30,22 @@ export interface SkillSystemState {
   playerSkills: Record<string, string[]>;
 }
 
-export type ResponseKind = "dodge" | "slash" | "nullify" | "blade-follow-up" | "peach" | "hujia" | "jijiang";
+export type ResponseKind =
+  | "dodge"
+  | "slash"
+  | "nullify"
+  | "blade-follow-up"
+  | "peach"
+  | "hujia"
+  | "jijiang"
+  | "double-sword";
 
 export interface ResponsePreference {
   dodge?: boolean;
   slash?: boolean;
   nullify?: boolean;
   "blade-follow-up"?: boolean;
+  "double-sword"?: boolean;
   peach?: boolean;
   hujia?: boolean;
   jijiang?: boolean;
@@ -159,6 +168,8 @@ export interface PlayCardAction {
   targetId?: string;
   /** 第二目标玩家编号，仅部分双目标牌使用。 */
   secondaryTargetId?: string;
+  /** 第三目标玩家编号，仅方天画戟多目标【杀】使用。 */
+  tertiaryTargetId?: string;
   /** 目标区域选择（用于顺手牵羊/过河拆桥）。 */
   targetZone?: "hand" | "equipment" | "judgment";
   /** 目标卡牌编号（用于在装备区/判定区中精确选择）。 */
@@ -188,6 +199,32 @@ export interface GameEvent {
   type: string;
   /** 事件描述。 */
   message: string;
+}
+
+export interface PendingHarvestState {
+  /** 发动五谷丰登的角色编号。 */
+  sourceId: string;
+  /** 按座次结算的目标序列。 */
+  participantIds: string[];
+  /** 当前轮到选择牌的序号。 */
+  cursor: number;
+  /** 仍可被选择的亮出牌。 */
+  revealed: Card[];
+  /** 五谷丰登实体牌，结算完成后进入弃牌堆。 */
+  trickCard: Card;
+}
+
+export interface PendingMassTrickState {
+  /** 发动群体锦囊的角色编号。 */
+  sourceId: string;
+  /** 群体锦囊类型。 */
+  trickKind: Extract<CardKind, "barbarian" | "archery">;
+  /** 按座次结算的目标序列。 */
+  targetIds: string[];
+  /** 当前结算到的目标序号。 */
+  cursor: number;
+  /** 群体锦囊实体牌，结算完成后进入弃牌堆。 */
+  trickCard: Card;
 }
 
 /**
@@ -236,6 +273,20 @@ export interface GameState {
   responsePreferenceByPlayer: Record<string, ResponsePreference>;
   /** 当前回合各角色的响应决策队列。 */
   responseDecisionQueueByPlayer: Record<string, Partial<Record<ResponseKind, boolean[]>>>;
+  /** 各角色预结算的八卦阵判定结果队列（按响应次序消费）。 */
+  preparedEightDiagramResultByPlayer: Record<string, boolean[]>;
+  /** 各角色是否启用手动弃牌模式。 */
+  manualDiscardByPlayer: Record<string, boolean>;
+  /** 是否启用五谷丰登手动选牌模式。 */
+  manualHarvestSelectionMode: boolean;
+  /** 五谷丰登待选牌状态。 */
+  pendingHarvest: PendingHarvestState | null;
+  /** 是否启用南蛮/万箭逐目标暂停结算模式。 */
+  manualMassTrickStepMode: boolean;
+  /** 群体锦囊（南蛮/万箭）逐目标结算状态。 */
+  pendingMassTrick: PendingMassTrickState | null;
+  /** 各角色是否启用方天画戟手动多目标模式。 */
+  halberdManualTargetModeByPlayer: Record<string, boolean>;
   /** 各角色是否启用青龙偃月刀“闪后确认”模式。 */
   bladeFollowUpPromptModeByPlayer: Record<string, boolean>;
   /** 青龙偃月刀追击待确认状态。 */

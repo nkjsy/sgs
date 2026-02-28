@@ -245,6 +245,14 @@ button:disabled {
   border: none;
 }
 
+.panel.battle-table {
+  overflow: visible;
+}
+
+.player-list.official-table {
+  overflow: visible;
+}
+
 .table-corner-info {
   position: absolute;
   left: 12px;
@@ -594,38 +602,17 @@ button:disabled {
 
 .hand-list {
   display: flex;
-  align-items: stretch;
-  gap: 10px;
+  align-items: flex-end;
+  gap: 0;
   max-height: none;
-  overflow-x: scroll;
-  overflow-y: hidden;
-  padding: 2px 16px 8px 2px;
-  scroll-padding-right: 16px;
-  scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: #9aabcc #e8eef9;
+  overflow: visible;
+  padding: 0;
+  height: 146px;
+  min-width: 0;
 }
 
 .self-hand-main {
   min-width: 0;
-}
-
-.hand-list::-webkit-scrollbar {
-  height: 10px;
-}
-
-.hand-list::-webkit-scrollbar-track {
-  background: #e8eef9;
-  border-radius: 10px;
-}
-
-.hand-list::-webkit-scrollbar-thumb {
-  background: #9aabcc;
-  border-radius: 10px;
-}
-
-.hand-list::-webkit-scrollbar-thumb:hover {
-  background: #7f93b8;
 }
 
 .hand-panel {
@@ -669,15 +656,30 @@ button:disabled {
 .hand-card {
   border: 1px solid #e2e7f2;
   border-radius: 8px;
-  padding: 7px;
+  padding: 0;
   background: #fbfcff;
-  display: grid;
-  grid-template-columns: 36px 1fr;
-  gap: 7px;
-  align-items: center;
-  width: 188px;
-  flex: 0 0 188px;
+  display: block;
+  width: 104px;
+  height: 146px;
+  flex: 1 1 0;
+  max-width: 104px;
+  min-width: 36px;
   text-align: left;
+  overflow: hidden;
+  margin-left: 0;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.hand-card:hover,
+.hand-card:focus-visible {
+  transform: translateY(-16px);
+  box-shadow: 0 6px 16px rgba(24, 35, 61, 0.22);
+  z-index: 200 !important;
+}
+
+.hand-card.selected {
+  transform: translateY(-16px);
+  z-index: 180 !important;
 }
 
 .hand-card.selected {
@@ -686,10 +688,10 @@ button:disabled {
 }
 
 .card-icon {
-  width: 36px;
-  height: 52px;
-  border: 1px solid #d9dfec;
-  border-radius: 4px;
+  width: 100%;
+  height: 100%;
+  border: none;
+  border-radius: 8px;
   object-fit: cover;
   background: #eef2fb;
 }
@@ -742,6 +744,25 @@ button:disabled {
   min-width: 64px;
   color: #5b6680;
   font-size: 12px;
+}
+
+.log-item {
+  border-radius: 6px;
+  padding: 1px 4px;
+}
+
+.log-item.log-item-human {
+  background: #f3f7ff;
+  border: 1px solid #b8c8ec;
+}
+
+.log-player {
+  display: inline-block;
+  margin: 0 1px;
+  padding: 0 4px;
+  border-radius: 4px;
+  color: #2f3a53;
+  background: #eef4ff;
 }
 
 @media (max-width: 980px) {

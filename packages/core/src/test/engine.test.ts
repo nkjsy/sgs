@@ -4,6 +4,7 @@ import { createDeck } from "../cards";
 import {
   applyAction,
   createInitialGame,
+  getPendingMassTrickAction,
   getLegalActions,
   queueResponseDecision,
   setLuoyiChoice,
@@ -514,6 +515,47 @@ test("archery should be cancelable per target by nullify", () => {
 
   assert.equal(target.hp, hpBefore);
   assert.ok(state.discard.some((card) => card.id === "protector-nullify"));
+});
+
+test("pending mass trick should not leak queued nullify decisions across targets", () => {
+  const state = createInitialGame(42);
+  const source = state.players[0];
+  const human = state.players[1];
+  const secondTarget = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  state.manualMassTrickStepMode = true;
+
+  source.hand = [{ id: "archery-leak-1", kind: "archery" }];
+  human.hand = [
+    { id: "archery-leak-nullify-1", kind: "nullify" },
+    { id: "archery-leak-nullify-2", kind: "nullify" }
+  ];
+  secondTarget.hand = [];
+
+  queueResponseDecision(state, human.id, "nullify", true);
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "archery-leak-1"
+  });
+
+  const firstPending = getPendingMassTrickAction(state);
+  assert.ok(firstPending);
+  applyAction(state, firstPending);
+
+  assert.ok(state.discard.some((card) => card.id === "archery-leak-nullify-1"));
+  assert.equal(
+    human.hand.some((card) => card.id === "archery-leak-nullify-2"),
+    true,
+    "未显式队列确认的下一目标不应自动再打出无懈"
+  );
 });
 
 test("queued nullify decisions should be consumed in order", () => {
@@ -1260,7 +1302,7 @@ test("harvest should distribute one revealed card to each alive player", () => {
     { id: "h-card-2", kind: "peach" },
     { id: "h-card-3", kind: "dodge" },
     { id: "h-card-4", kind: "duel" },
-    { id: "h-card-5", kind: "nullify" }
+    { id: "h-card-5", kind: "snatch" }
   ];
 
   applyAction(state, {
@@ -1415,9 +1457,9 @@ test("collateral forced slash with halberd should only affect designated target"
  */
 test("harvest should be nullifiable per target", () => {
   const state = createInitialGame(42);
-  const actor = state.players[2];
+  const actor = state.players[0];
   const target = state.players[0];
-  const protector = state.players[1];
+  const protector = state.players[2];
 
   for (const player of state.players) {
     player.hand = [];
@@ -1443,6 +1485,40 @@ test("harvest should be nullifiable per target", () => {
 
   assert.equal(target.hand.length, 0);
   assert.ok(state.discard.some((card) => card.id === "harvest-nullify-rsp"));
+});
+
+test("harvest should support multi-nullify chain and apply on even nullify count", () => {
+  const state = createInitialGame(42, { nullifyResponsePolicy: "seat-order" });
+  const actor = state.players[0];
+  const firstResponder = state.players[1];
+  const secondResponder = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "harvest-multi-nullify-1", kind: "harvest" }];
+  firstResponder.hand = [{ id: "harvest-multi-nullify-rsp-1", kind: "nullify" }];
+  secondResponder.hand = [{ id: "harvest-multi-nullify-rsp-2", kind: "nullify" }];
+  state.deck = [
+    { id: "hm-1", kind: "peach" },
+    { id: "hm-2", kind: "slash" },
+    { id: "hm-3", kind: "dodge" },
+    { id: "hm-4", kind: "duel" },
+    { id: "hm-5", kind: "snatch" }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "harvest-multi-nullify-1"
+  });
+
+  assert.ok(state.discard.some((card) => card.id === "harvest-multi-nullify-rsp-1"));
+  assert.ok(state.discard.some((card) => card.id === "harvest-multi-nullify-rsp-2"));
+  assert.equal(actor.hand.length, 1);
 });
 
 /**
@@ -3038,6 +3114,37 @@ test("double sword should force opposite-gender target to discard when possible"
 });
 
 /**
+ * 验证雌雄双股剑可由目标选择“令攻击者摸牌”。
+ */
+test("double sword should allow opposite-gender target to let source draw", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.equipment.weapon = { id: "double-sword-choose-draw", kind: "weapon_double_sword", suit: "spade", point: 2 };
+  actor.hand = [{ id: "slash-ds-choose-draw", kind: "slash", suit: "club", point: 9 }];
+  target.hand = [{ id: "target-card-ds-choose", kind: "peach", suit: "heart", point: 3 }];
+  state.deck = [{ id: "draw-double-sword-choice", kind: "dodge", suit: "diamond", point: 2 }];
+  setResponsePreference(state, target.id, "double-sword", false);
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-ds-choose-draw",
+    targetId: target.id
+  });
+
+  assert.equal(target.hand.some((card) => card.id === "target-card-ds-choose"), true);
+  assert.ok(actor.hand.some((card) => card.id === "draw-double-sword-choice"));
+});
+
+/**
  * 验证雌雄双股剑在异性目标无手牌时触发摸牌分支。
  */
 test("double sword should let source draw when opposite-gender target has no cards", () => {
@@ -3432,6 +3539,35 @@ test("tuxi skill should steal up to two cards and reduce draw", () => {
   assert.ok(actor.hand.some((card) => card.id === "tuxi-target-b-1"));
   assert.equal(actor.hand.some((card) => card.id === "tuxi-deck-1"), false);
   assert.equal(actor.hand.some((card) => card.id === "tuxi-deck-2"), false);
+});
+
+/**
+ * 验证张辽【突袭】获得陆逊最后手牌时，会触发陆逊【连营】。
+ */
+test("tuxi should trigger lianying when stealing the last hand card", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[1];
+  const target = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.zhangliaoTuxi);
+  assignSkillToPlayer(state, target.id, STANDARD_SKILL_IDS.luxunLianying);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "draw";
+  target.hand = [{ id: "tuxi-steal-last", kind: "dodge", suit: "heart", point: 4 }];
+  state.deck = [
+    { id: "lianying-draw-after-tuxi", kind: "slash", suit: "spade", point: 7 },
+    { id: "tuxi-remaining-draw", kind: "peach", suit: "diamond", point: 6 }
+  ];
+
+  stepPhase(state);
+
+  assert.ok(actor.hand.some((card) => card.id === "tuxi-steal-last"));
+  assert.ok(target.hand.some((card) => card.id === "lianying-draw-after-tuxi"));
 });
 
 /**
