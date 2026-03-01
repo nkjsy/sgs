@@ -1,8 +1,15 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { applyAction, chooseAiAction, createInitialGame, getLegalActions, stepPhase, TurnAction } from "@sgs/core";
+import {
+  applyAction,
+  chooseAiAction,
+  createAiDecisionContext,
+  createInitialGame,
+  getLegalActions,
+  stepPhase,
+  TurnAction
+} from "@sgs/core";
 import { setupSingleDemoRoster } from "./simulation";
-
 const EVENT_STYLE: Record<string, { tag: string; group: string }> = {
   "game-start": { tag: "START", group: "系统" },
   "game-over": { tag: "END", group: "系统" },
@@ -133,7 +140,7 @@ async function runInteractiveGame(): Promise<void> {
       }
 
       if (actor.isAi) {
-        const action = chooseAiAction({ state, actor });
+        const action = chooseAiAction(createAiDecisionContext(state, actor.id));
         applyAction(state, action);
         if (action.type === "end-play-phase") {
           stepPhase(state);

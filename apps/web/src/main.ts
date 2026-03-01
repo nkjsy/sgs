@@ -10,6 +10,7 @@ import {
   chooseHarvestCard,
   chooseAiAction,
   createInitialGame,
+  createAiDecisionContext,
   discardSelectedCards,
   getPendingMassTrickAction,
   getPendingHarvestChoice,
@@ -3806,7 +3807,7 @@ function runOneTick(): void {
     return;
   }
 
-  const action = chooseAiAction({ state: game, actor });
+  const action = chooseAiAction(createAiDecisionContext(game, actor.id));
   const pending = getPendingHumanResponseForAiAction(game, action);
   if (pending) {
     pendingHumanResponse = pending;
@@ -3873,7 +3874,7 @@ function runAutoUntilHumanChoice(maxTicks = 500): void {
       continue;
     }
 
-    const action = chooseAiAction({ state: game, actor });
+    const action = chooseAiAction(createAiDecisionContext(game, actor.id));
     const pending = getPendingHumanResponseForAiAction(game, action);
     if (pending) {
       pendingHumanResponse = pending;

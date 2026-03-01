@@ -4,6 +4,7 @@ import {
   applyAction,
   assignSkillToPlayer,
   chooseAiAction,
+  createAiDecisionContext,
   createInitialGame,
   stepPhase
 } from "@sgs/core";
@@ -78,7 +79,7 @@ export function runSingleSimulation(seed: number, options: RunSingleSimulationOp
         continue;
       }
 
-      const action = chooseAiAction({ state, actor });
+        const action = chooseAiAction(createAiDecisionContext(state, actor.id));
       applyAction(state, action);
 
       if (action.type === "end-play-phase") {
