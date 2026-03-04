@@ -18,8 +18,15 @@ import {
   getLegalActions,
   prepareEightDiagramJudge,
   queueResponseDecision,
+  resolvePendingDuelResponse,
   resolvePendingBladeFollowUp,
+  resolvePendingAxeStrike,
+  resolvePendingIceSword,
   setBladeFollowUpPromptMode,
+  setAxeStrikePromptMode,
+  setIceSwordPromptMode,
+  setDuelPromptMode,
+  setPeachRescuePromptMode,
   setHalberdManualTargetMode,
   setManualDiscardMode,
   setManualHarvestSelectionMode,
@@ -519,6 +526,9 @@ let activeSkillModeId: string | null = null;
 let pendingHumanResponse: PendingHumanResponse | null = null;
 let selectedTuxiTargetIds: string[] = [];
 let selectedDiscardCardIds: string[] = [];
+let selectedAxeCostCardIds: string[] = [];
+let spearComposeMode = false;
+let selectedSpearCostCardIds: string[] = [];
 
 if (!foundApp) {
   showFatalError(new Error("页面缺少 #app 容器节点"));
@@ -564,11 +574,15 @@ function escapeHtml(value: string): string {
 }
 
 function createGame(seed: number): Game {
-  const state = createInitialGame(seed, { nullifyResponsePolicy: "seat-order" });
+  const state = createInitialGame(seed, { nullifyResponsePolicy: "camp-first" });
   const human = state.players[0];
   if (human) {
     setResponsePreference(state, human.id, "peach", false);
     setBladeFollowUpPromptMode(state, human.id, true);
+    setAxeStrikePromptMode(state, human.id, true);
+    setIceSwordPromptMode(state, human.id, true);
+    setDuelPromptMode(state, human.id, true);
+    setPeachRescuePromptMode(state, human.id, true);
     setHalberdManualTargetMode(state, human.id, true);
     setManualDiscardMode(state, human.id, true);
     setManualHarvestSelectionMode(state, true);
@@ -637,6 +651,9 @@ function resetUiSelections(): void {
   pendingHumanResponse = null;
   selectedTuxiTargetIds = [];
   selectedDiscardCardIds = [];
+  selectedAxeCostCardIds = [];
+  spearComposeMode = false;
+  selectedSpearCostCardIds = [];
 }
 
 function startNewGame(seed = createRuntimeSeed()): void {
@@ -902,7 +919,8 @@ function renderHarvestChoicePanel(pending: { pickerId: string; revealed: Card[];
   const buttons = pending.revealed
     .map(
       (card) =>
-        `<button data-role="harvest-choice" data-card-id="${card.id}" title="${getCardKindLabelZh(card.kind)}">
+        `<button class="harvest-choice-card" data-role="harvest-choice" data-card-id="${card.id}" title="${getCardKindLabelZh(card.kind)}">
+          ${renderCardCornerMarks(card)}
           <img class="card-icon" src="${ASSET_BASE}/cards/${card.kind}.png" alt="${getCardKindLabelZh(card.kind)}" />
         </button>`
     )
@@ -915,9 +933,22 @@ function renderHarvestChoicePanel(pending: { pickerId: string; revealed: Card[];
 }
 
 function renderHumanResponsePanel(pending: PendingHumanResponse): string {
+  if (pending.kind === "axe-strike") {
+    return `
+      <div class="status">${pending.message}</div>
+      <div class="status">请直接在手牌区/装备区选择 2 张代价牌（已选 ${selectedAxeCostCardIds.length}/2）。</div>
+      <div class="response-actions">
+        <button data-role="axe-strike-confirm" ${selectedAxeCostCardIds.length === 2 ? "" : "disabled"}>发动贯石斧</button>
+        <button data-role="axe-strike-skip">不发动</button>
+      </div>
+    `;
+  }
+
   const allowLabel =
     pending.kind === "blade-follow-up"
       ? "允许追击"
+      : pending.kind === "ice-sword"
+        ? "发动"
       : pending.kind === "peach"
         ? "允许救援"
         : pending.kind === "hujia" || pending.kind === "jijiang"
@@ -926,6 +957,8 @@ function renderHumanResponsePanel(pending: PendingHumanResponse): string {
   const rejectLabel =
     pending.kind === "blade-follow-up"
       ? "不追击"
+      : pending.kind === "ice-sword"
+        ? "不发动"
       : pending.kind === "peach"
         ? "不救援"
         : pending.kind === "hujia" || pending.kind === "jijiang"
@@ -1378,6 +1411,13 @@ function render(): void {
     pendingHarvestChoiceRaw && pendingHarvestChoiceRaw.pickerId === getHumanPlayer(game).id ? pendingHarvestChoiceRaw : null;
   const pendingResponse = pendingHumanResponse;
 
+  if (pendingResponse?.kind === "axe-strike") {
+    const availableIds = new Set(getPendingAxeCostOptions(game).map((option) => option.id));
+    selectedAxeCostCardIds = selectedAxeCostCardIds.filter((cardId) => availableIds.has(cardId)).slice(0, 2);
+  } else if (selectedAxeCostCardIds.length > 0) {
+    selectedAxeCostCardIds = [];
+  }
+
   if (pendingManualDiscard) {
     const handIds = new Set(getHumanPlayer(game).hand.map((card) => card.id));
     selectedDiscardCardIds = selectedDiscardCardIds.filter((cardId) => handIds.has(cardId)).slice(0, pendingManualDiscard.needCount);
@@ -1395,6 +1435,23 @@ function render(): void {
     !game.winner && actor && !actor.isAi && game.phase === "play"
       ? getLegalActions(game).filter((action) => action.actorId === actor.id)
       : [];
+
+  const spearActions = allLegalActions.filter(
+    (action) => action.type === "play-card" && action.cardId === "__virtual_spear_slash__"
+  );
+  if (spearComposeMode && spearActions.length === 0) {
+    spearComposeMode = false;
+    selectedSpearCostCardIds = [];
+    pendingPrimaryTargetId = null;
+    previewTargetIds = [];
+  }
+
+  if (spearComposeMode) {
+    const handIdsForSpear = new Set(getHumanPlayer(game).hand.map((card) => card.id));
+    selectedSpearCostCardIds = selectedSpearCostCardIds.filter((cardId) => handIdsForSpear.has(cardId)).slice(0, 2);
+  } else if (selectedSpearCostCardIds.length > 0) {
+    selectedSpearCostCardIds = [];
+  }
 
   const availableSkillModes = new Set(
     allLegalActions
@@ -1441,6 +1498,8 @@ function render(): void {
   const selectedCardActions =
     selectedCardActionsFromHand.length > 0
       ? selectedCardActionsFromHand
+      : !selectedCardId && spearComposeMode
+        ? spearActions
       : !selectedCardId && activeSkillModeId
         ? playableActions.filter((action) => {
             if (getActionModeId(action) !== activeSkillModeId) {
@@ -1450,6 +1509,8 @@ function render(): void {
             const sourceCardId = getActionSourceCardId(action);
             return sourceCardId === null || !handCardIds.has(sourceCardId);
           })
+        : !selectedCardId
+          ? playableActions.filter((action) => action.type === "play-card" && action.cardId === "__virtual_spear_slash__")
         : [];
   const directTargetActionCandidates = pendingPrimaryTargetId && pendingSecondaryTargetId
     ? selectedCardActions.filter(
@@ -1521,35 +1582,18 @@ function render(): void {
               <div class="center-log-title">事件日志</div>
               <ol class="log-list">${renderEvents(game, pendingResponse?.previewCardEventMessage)}</ol>
             </section>
-            ${pendingResponse
-              ? `<section class="center-response">
-              <div class="center-log-title">响应窗口</div>
-              <div class="action-list response-inline">${renderHumanResponsePanel(pendingResponse)}</div>
-            </section>`
-              : pendingHarvestChoice
-                ? `<section class="center-response">
-              <div class="center-log-title">五谷丰登</div>
-              <div class="action-list response-inline">${renderHarvestChoicePanel(pendingHarvestChoice)}</div>
-            </section>`
-              : pendingManualDiscard
-                ? `<section class="center-response">
-              <div class="center-log-title">弃牌阶段</div>
-              <div class="action-list response-inline">${renderManualDiscardPanel(pendingManualDiscard)}</div>
-            </section>`
-              : pendingTuxiChoice
-                ? `<section class="center-response">
-              <div class="center-log-title">摸牌阶段决策</div>
-              <div class="action-list response-inline">${renderTuxiChoicePanel(pendingTuxiChoice)}</div>
-            </section>`
-                : pendingLuoyiChoice
-                  ? `<section class="center-response">
-              <div class="center-log-title">摸牌阶段决策</div>
-              <div class="action-list response-inline">${renderLuoyiChoicePanel(game)}</div>
-            </section>`
-                  : ""}
+            ${renderLatestPlayedCardPanel(game, pendingHarvestChoice)}
           </section>
         </div>
       </section>
+
+      <section class="panel middle-response-strip">${renderMiddleResponseStrip(
+        game,
+        pendingResponse,
+        pendingManualDiscard,
+        pendingTuxiChoice,
+        pendingLuoyiChoice
+      )}</section>
 
       <section class="panel self-zone">
         <div class="self-head">
@@ -1574,7 +1618,7 @@ function render(): void {
                   ${renderSkillToolbar(game, allLegalActions, activeSkillModeId)}
                   ${endPlayAction ? '<button data-role="end-play-inline">结束出牌阶段</button>' : ""}
                 </div>
-                <div class="status">装备区：${humanEquipmentSummary}</div>
+                ${renderSelfEquipmentStatus(humanPlayer, legalActions)}
                 <div class="status">判定区：${humanJudgmentSummary}</div>
               </aside>
             </section>
@@ -1587,6 +1631,8 @@ function render(): void {
   bindGlobalButtons();
   bindLuoyiChoiceButtons();
   bindHumanResponseButtons();
+  bindAxeStrikeButtons();
+  bindSpearComposeButtons();
   bindTuxiChoiceButtons();
   bindSkillButtons(allLegalActions);
   bindHandButtons(legalActions);
@@ -1977,7 +2023,7 @@ function renderPlayers(
       const isCurrent = player.id === state.currentPlayerId;
       const isTargeted = targetedIds.includes(player.id);
       const isSelectable = selectableTargetIds.includes(player.id);
-      const identityVisible = player.identity === "lord" || player.id === viewerId || !player.alive;
+      const identityVisible = Boolean(state.winner) || player.identity === "lord" || player.id === viewerId || !player.alive;
       const identityLabel = identityVisible ? IDENTITY_LABEL_ZH[player.identity] : "未知";
       const generalId = getGeneralIdByName(player.name);
       const mappedGeneralId = playerGeneralIdByPlayerId[player.id] ?? generalId;
@@ -2007,7 +2053,7 @@ function renderPlayers(
         .filter(Boolean)
         .join(" ");
       const { left, top } = getOpponentSeatPosition(index, seatCount);
-      const adjustedTop = Math.min(88, top + 6);
+      const adjustedTop = Math.min(80, Math.max(18, top - 8));
       const isTopRowSeat = adjustedTop <= 45;
       const skillPopoverClass = isTopRowSeat ? "player-popover-left" : "player-popover-up";
       const infoPopoverClass = isTopRowSeat ? "player-popover-right" : "player-popover-bottom";
@@ -2088,8 +2134,14 @@ function renderHand(hand: Card[], legalActions: TurnAction[], currentSelectedCar
     .map(
       (card, index) => `
       <button class="hand-card ${
-        (pendingManualDiscard && selectedDiscardCardIds.includes(card.id)) || card.id === currentSelectedCardId ? "selected" : ""
+        (pendingManualDiscard && selectedDiscardCardIds.includes(card.id)) ||
+        (pendingHumanResponse?.kind === "axe-strike" && selectedAxeCostCardIds.includes(card.id)) ||
+        (spearComposeMode && selectedSpearCostCardIds.includes(card.id)) ||
+        card.id === currentSelectedCardId
+          ? "selected"
+          : ""
       }" data-role="hand-card" data-card-id="${card.id}" style="z-index:${index + 1}" title="${getCardKindLabelZh(card.kind)}">
+        ${renderCardCornerMarks(card)}
         <img class="card-icon" src="${ASSET_BASE}/cards/${card.kind}.png" alt="${getCardKindLabelZh(card.kind)}" />
       </button>
     `
@@ -2101,13 +2153,60 @@ function getCardKindLabelZh(kind: string): string {
   return CARD_KIND_LABEL_ZH[kind] ?? kind;
 }
 
+function getCardPointLabel(point: number): string {
+  if (point === 1) {
+    return "A";
+  }
+  if (point === 11) {
+    return "J";
+  }
+  if (point === 12) {
+    return "Q";
+  }
+  if (point === 13) {
+    return "K";
+  }
+
+  return String(point);
+}
+
+function getCardSuitSymbol(suit: Card["suit"]): string {
+  if (suit === "spade") {
+    return "♠";
+  }
+  if (suit === "heart") {
+    return "♥";
+  }
+  if (suit === "club") {
+    return "♣";
+  }
+
+  return "♦";
+}
+
+function isCardSuitRed(suit: Card["suit"]): boolean {
+  return suit === "heart" || suit === "diamond";
+}
+
+function renderCardCornerMarks(card: Card): string {
+  const label = `${getCardPointLabel(card.point)}${getCardSuitSymbol(card.suit)}`;
+  const colorClass = isCardSuitRed(card.suit) ? "red" : "black";
+  return `
+    <span class="card-corner top-left ${colorClass}">${label}</span>
+    <span class="card-corner bottom-right ${colorClass}">${label}</span>
+  `;
+}
+
 function renderTargetActions(
   currentSelectedCardId: string | null,
   selectedCardActions: TurnAction[],
   endPlayAction: TurnAction | null
 ): string {
   if (game.winner) {
-    return `<div class="status">对局结束，胜利方：${game.winner}</div>`;
+    const identities = game.players
+      .map((player) => `${player.name}：${IDENTITY_LABEL_ZH[player.identity]}`)
+      .join("，");
+    return `<div class="status">对局结束，胜利方：${game.winner}｜身份：${identities}</div>`;
   }
 
   if (!currentSelectedCardId && selectedCardActions.length === 0) {
@@ -2177,6 +2276,178 @@ function getActionTargetLabel(state: Game, action: TurnAction): string {
   }
 
   return "无指定目标";
+}
+
+function getPendingSpearComposeAction(state: Game): PlayCardAction | null {
+  if (!spearComposeMode || !pendingPrimaryTargetId) {
+    return null;
+  }
+
+  const actor = getHumanPlayer(state);
+  if (!actor.alive || actor.id !== state.currentPlayerId || state.phase !== "play") {
+    return null;
+  }
+
+  const legalActions = getLegalActions(state).filter((action) => action.actorId === actor.id);
+  const matched = legalActions.find(
+    (action) => action.type === "play-card" && action.cardId === "__virtual_spear_slash__" && action.targetId === pendingPrimaryTargetId
+  );
+
+  return matched && matched.type === "play-card" ? matched : null;
+}
+
+function renderSpearComposePanel(state: Game): string {
+  const target = pendingPrimaryTargetId ? state.players.find((player) => player.id === pendingPrimaryTargetId) : null;
+  const hasAction = Boolean(getPendingSpearComposeAction(state));
+  const canConfirm = selectedSpearCostCardIds.length === 2 && hasAction;
+
+  return `
+    <div class="status">丈八蛇矛：请选择 2 张手牌并指定目标（已选 ${selectedSpearCostCardIds.length}/2）。</div>
+    <div class="status">当前目标：${target?.name ?? "未选择"}</div>
+    <div class="response-actions">
+      <button data-role="spear-compose-confirm" ${canConfirm ? "" : "disabled"}>将两张牌当杀打出</button>
+      <button data-role="spear-compose-cancel">取消丈八</button>
+    </div>
+  `;
+}
+
+function renderMiddleResponseStrip(
+  state: Game,
+  pendingResponse: PendingHumanResponse | null,
+  pendingManualDiscard: ReturnType<typeof getPendingManualDiscardChoice>,
+  pendingTuxiChoice: ReturnType<typeof getPendingTuxiChoice>,
+  pendingLuoyiChoice: boolean
+): string {
+  if (spearComposeMode) {
+    return `
+      <div class="strip-inner">
+        <div class="strip-title">丈八蛇矛</div>
+        <div class="action-list response-inline">${renderSpearComposePanel(state)}</div>
+      </div>
+    `;
+  }
+
+  if (pendingResponse) {
+    return `
+      <div class="strip-inner">
+        <div class="strip-title">响应窗口</div>
+        <div class="action-list response-inline">${renderHumanResponsePanel(pendingResponse)}</div>
+      </div>
+    `;
+  }
+
+  if (pendingManualDiscard) {
+    return `
+      <div class="strip-inner">
+        <div class="strip-title">弃牌阶段</div>
+        <div class="action-list response-inline">${renderManualDiscardPanel(pendingManualDiscard)}</div>
+      </div>
+    `;
+  }
+
+  if (pendingTuxiChoice) {
+    return `
+      <div class="strip-inner">
+        <div class="strip-title">摸牌阶段决策</div>
+        <div class="action-list response-inline">${renderTuxiChoicePanel(pendingTuxiChoice)}</div>
+      </div>
+    `;
+  }
+
+  if (pendingLuoyiChoice) {
+    return `
+      <div class="strip-inner">
+        <div class="strip-title">摸牌阶段决策</div>
+        <div class="action-list response-inline">${renderLuoyiChoicePanel(state)}</div>
+      </div>
+    `;
+  }
+
+  return `<div class="strip-placeholder status">当前无待响应操作</div>`;
+}
+
+function renderLatestPlayedCardPanel(
+  state: Game,
+  pendingHarvestChoice: ReturnType<typeof getPendingHarvestChoice> | null = null
+): string {
+  if (pendingHarvestChoice) {
+    return renderHarvestChoiceInLatestPanel(state, pendingHarvestChoice);
+  }
+
+  const latestCard = state.latestPlayedCard;
+  const latestCardEvent = [...state.events].reverse().find((event) => event.type === "card");
+  if (!latestCard || !latestCardEvent) {
+    return `
+      <section class="center-latest">
+        <div class="center-log-title">最新出牌</div>
+        <div class="latest-card-content">
+          <div class="latest-card-box">
+            <div class="latest-card-empty status">尚无出牌记录</div>
+          </div>
+          <div class="latest-card-log">等待新的出牌事件。</div>
+        </div>
+      </section>
+    `;
+  }
+
+  const cardImage = latestCard.kind
+    ? `
+      ${renderCardCornerMarks(latestCard)}
+      <img class="latest-card-image" src="${ASSET_BASE}/cards/${latestCard.kind}.png" alt="${getCardKindLabelZh(latestCard.kind)}" />
+    `
+    : `<div class="latest-card-fallback">${escapeHtml(localizeEventMessage(latestCardEvent.message))}</div>`;
+  const cardMeta = `${getCardKindLabelZh(latestCard.kind)} ${getCardPointLabel(latestCard.point)}${getCardSuitSymbol(latestCard.suit)}`;
+
+  return `
+    <section class="center-latest">
+      <div class="center-log-title">最新出牌</div>
+      <div class="latest-card-content">
+        <div class="latest-card-box">${cardImage}</div>
+        <div class="latest-card-log">
+          <div class="latest-card-meta">牌面：${escapeHtml(cardMeta)}</div>
+          <div>${escapeHtml(localizeEventMessage(latestCardEvent.message))}</div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderHarvestChoiceInLatestPanel(
+  state: Game,
+  pendingHarvestChoice: ReturnType<typeof getPendingHarvestChoice>
+): string {
+  const picker = state.players.find((player) => player.id === pendingHarvestChoice.pickerId);
+  const pickerName = picker?.name ?? pendingHarvestChoice.pickerId;
+  const buttons = pendingHarvestChoice.revealed
+    .map(
+      (card) =>
+        `<button class="harvest-choice-card" data-role="harvest-choice" data-card-id="${card.id}" title="${getCardKindLabelZh(card.kind)}">
+          ${renderCardCornerMarks(card)}
+          <img class="card-icon" src="${ASSET_BASE}/cards/${card.kind}.png" alt="${getCardKindLabelZh(card.kind)}" />
+        </button>`
+    )
+    .join("");
+
+  return `
+    <section class="center-latest latest-harvest">
+      <div class="center-log-title">五谷丰登</div>
+      <div class="latest-harvest-info status">当前由 ${pickerName} 选牌（剩余 ${pendingHarvestChoice.revealed.length} 张）</div>
+      <div class="harvest-choice-grid">${buttons}</div>
+    </section>
+  `;
+}
+
+function inferCardKindFromCardEventMessage(message: string): Card["kind"] | null {
+  const entries = Object.entries(CARD_KIND_LABEL_ZH)
+    .sort((left, right) => right[1].length - left[1].length) as Array<[Card["kind"], string]>;
+
+  for (const [kind, label] of entries) {
+    if (message.includes(`使用${label}`) || message.includes(`发动激将，对`) && label === "杀") {
+      return kind;
+    }
+  }
+
+  return null;
 }
 
 function renderEvents(state: Game, pendingPreviewMessage: string | undefined = undefined): string {
@@ -2503,6 +2774,21 @@ function bindSkillButtons(allLegalActions: TurnAction[]): void {
         return;
       }
 
+      const modeActions = allLegalActions.filter((action) => getActionModeId(action) === modeId);
+      const directModeActions = modeActions.filter(isDirectSkillAction);
+      if (directModeActions.length > 0) {
+        const action = choosePreferredAction(directModeActions);
+        previewTargetIds = [];
+        selectedCardId = null;
+        pendingPrimaryTargetId = null;
+        pendingSecondaryTargetId = null;
+        pendingZoneChoiceActions = [];
+        pendingZoneCardChoiceActions = [];
+        activeSkillModeId = null;
+        executeHumanChosenAction(action);
+        return;
+      }
+
       activeSkillModeId = activeSkillModeId === modeId ? null : modeId;
       previewTargetIds = [];
       selectedCardId = null;
@@ -2640,8 +2926,29 @@ function bindHumanResponseButtons(): void {
       }
 
       pendingHumanResponse = null;
+      if (current.kind === "slash" && game.pendingDuel && game.pendingDuel.currentId === human.id) {
+        resolvePendingDuelResponse(game, enabled);
+        runAutoUntilHumanChoice();
+        render();
+        ensureAutoLoop();
+        return;
+      }
+
       if (current.kind === "blade-follow-up") {
         resolvePendingBladeFollowUp(game, enabled);
+        runAutoUntilHumanChoice();
+        render();
+        ensureAutoLoop();
+        return;
+      } else if (current.kind === "ice-sword") {
+        resolvePendingIceSword(game, enabled);
+        runAutoUntilHumanChoice();
+        render();
+        ensureAutoLoop();
+        return;
+      } else if (current.kind === "axe-strike") {
+        resolvePendingAxeStrike(game, enabled, selectedAxeCostCardIds);
+        selectedAxeCostCardIds = [];
         runAutoUntilHumanChoice();
         render();
         ensureAutoLoop();
@@ -2654,8 +2961,21 @@ function bindHumanResponseButtons(): void {
         current.kind === "hujia" ||
         current.kind === "jijiang"
       ) {
-        queueResponseDecision(game, human.id, current.kind, enabled);
-        setResponsePreference(game, human.id, current.kind, false);
+        let queueCount = 1;
+        if (enabled && current.kind === "dodge" && current.action.type === "play-card") {
+          const actionKind = inferActionCardKindForResponse(game, current.action);
+          const source = game.players.find((player) => player.id === current.action.actorId);
+          if (actionKind === "slash" && source && hasSkillOnPlayer(game, source.id, STANDARD_SKILL_IDS.lvbuWushuang)) {
+            queueCount = 2;
+          }
+        }
+
+        for (let index = 0; index < queueCount; index += 1) {
+          queueResponseDecision(game, human.id, current.kind, enabled);
+        }
+        if (!enabled) {
+          setResponsePreference(game, human.id, current.kind, false);
+        }
       } else if (!enabled) {
         setResponsePreference(game, human.id, current.kind, false);
       }
@@ -2665,6 +2985,234 @@ function bindHumanResponseButtons(): void {
       render();
       ensureAutoLoop();
     });
+  });
+}
+
+function getPendingAxeCostOptions(
+  state: Game
+): Array<{ id: string; kind: Card["kind"]; suit: Card["suit"]; point: number; zone: "hand" | "equipment" }> {
+  const pending = state.pendingAxeStrike;
+  if (!pending) {
+    return [];
+  }
+
+  const source = state.players.find((player) => player.id === pending.sourceId);
+  if (!source || !source.alive) {
+    return [];
+  }
+
+  const options: Array<{ id: string; kind: Card["kind"]; suit: Card["suit"]; point: number; zone: "hand" | "equipment" }> = source.hand.map((card) => ({
+    id: card.id,
+    kind: card.kind,
+    suit: card.suit,
+    point: card.point,
+    zone: "hand"
+  }));
+
+  if (source.equipment.weapon && source.equipment.weapon.kind !== "weapon_axe") {
+    options.push({
+      id: source.equipment.weapon.id,
+      kind: source.equipment.weapon.kind,
+      suit: source.equipment.weapon.suit,
+      point: source.equipment.weapon.point,
+      zone: "equipment"
+    });
+  }
+  if (source.equipment.armor) {
+    options.push({
+      id: source.equipment.armor.id,
+      kind: source.equipment.armor.kind,
+      suit: source.equipment.armor.suit,
+      point: source.equipment.armor.point,
+      zone: "equipment"
+    });
+  }
+  if (source.equipment.horsePlus) {
+    options.push({
+      id: source.equipment.horsePlus.id,
+      kind: source.equipment.horsePlus.kind,
+      suit: source.equipment.horsePlus.suit,
+      point: source.equipment.horsePlus.point,
+      zone: "equipment"
+    });
+  }
+  if (source.equipment.horseMinus) {
+    options.push({
+      id: source.equipment.horseMinus.id,
+      kind: source.equipment.horseMinus.kind,
+      suit: source.equipment.horseMinus.suit,
+      point: source.equipment.horseMinus.point,
+      zone: "equipment"
+    });
+  }
+
+  return options;
+}
+
+function renderSelfEquipmentStatus(player: PlayerState, legalActions: TurnAction[]): string {
+  const inAxeMode = pendingHumanResponse?.kind === "axe-strike";
+  const options = getPendingAxeCostOptions(game).filter((option) => option.zone === "equipment");
+
+  const canStartSpearCompose = legalActions.some(
+    (action) => action.type === "play-card" && action.cardId === "__virtual_spear_slash__"
+  );
+  const spearToggle =
+    player.equipment.weapon?.kind === "weapon_spear"
+      ? `<button data-role="spear-compose-toggle" ${canStartSpearCompose ? "" : "disabled"}>${
+          spearComposeMode ? "取消丈八" : "发动丈八"
+        }</button>`
+      : "";
+
+  if (!inAxeMode || options.length === 0) {
+    return `<div class="status">装备区：${getEquipmentSummary(player)} ${spearToggle}</div>`;
+  }
+
+  const chips = options
+    .map(
+      (option) =>
+        `<button class="axe-equip-card ${selectedAxeCostCardIds.includes(option.id) ? "selected" : ""}" data-role="axe-equip-card" data-card-id="${option.id}" title="装备·${getCardKindLabelZh(option.kind)}">
+          ${renderCardCornerMarks(option)}
+          <img class="axe-equip-icon" src="${ASSET_BASE}/cards/${option.kind}.png" alt="${getCardKindLabelZh(option.kind)}" />
+        </button>`
+    )
+    .join("");
+
+  return `<div class="status">装备区：<span class="axe-cost-list">${chips}</span> ${spearToggle}</div>`;
+}
+
+function toggleAxeCostSelection(cardId: string): void {
+  const availableIds = new Set(getPendingAxeCostOptions(game).map((option) => option.id));
+  selectedAxeCostCardIds = selectedAxeCostCardIds.filter((id) => availableIds.has(id));
+
+  if (!availableIds.has(cardId)) {
+    return;
+  }
+
+  if (selectedAxeCostCardIds.includes(cardId)) {
+    selectedAxeCostCardIds = selectedAxeCostCardIds.filter((id) => id !== cardId);
+  } else if (selectedAxeCostCardIds.length < 2) {
+    selectedAxeCostCardIds = [...selectedAxeCostCardIds, cardId];
+  }
+}
+
+function bindAxeStrikeButtons(): void {
+  const equipButtons = app.querySelectorAll<HTMLButtonElement>("button[data-role='axe-equip-card']");
+  equipButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      if (pendingHumanResponse?.kind !== "axe-strike") {
+        return;
+      }
+
+      const cardId = button.dataset.cardId;
+      if (!cardId) {
+        return;
+      }
+
+      toggleAxeCostSelection(cardId);
+
+      render();
+      ensureAutoLoop();
+    });
+  });
+
+  const confirmButton = app.querySelector<HTMLButtonElement>("button[data-role='axe-strike-confirm']");
+  confirmButton?.addEventListener("click", () => {
+    if (pendingHumanResponse?.kind !== "axe-strike") {
+      return;
+    }
+
+    if (selectedAxeCostCardIds.length !== 2) {
+      return;
+    }
+
+    pendingHumanResponse = null;
+    resolvePendingAxeStrike(game, true, selectedAxeCostCardIds);
+    selectedAxeCostCardIds = [];
+    runAutoUntilHumanChoice();
+    render();
+    ensureAutoLoop();
+  });
+
+  const skipButton = app.querySelector<HTMLButtonElement>("button[data-role='axe-strike-skip']");
+  skipButton?.addEventListener("click", () => {
+    if (pendingHumanResponse?.kind !== "axe-strike") {
+      return;
+    }
+
+    pendingHumanResponse = null;
+    resolvePendingAxeStrike(game, false);
+    selectedAxeCostCardIds = [];
+    runAutoUntilHumanChoice();
+    render();
+    ensureAutoLoop();
+  });
+}
+
+function bindSpearComposeButtons(): void {
+  const toggleButton = app.querySelector<HTMLButtonElement>("button[data-role='spear-compose-toggle']");
+  toggleButton?.addEventListener("click", () => {
+    const human = getHumanPlayer(game);
+    const legalActions = getLegalActions(game).filter((action) => action.actorId === human.id);
+    const canStart = legalActions.some((action) => action.type === "play-card" && action.cardId === "__virtual_spear_slash__");
+    if (!canStart) {
+      return;
+    }
+
+    spearComposeMode = !spearComposeMode;
+    selectedSpearCostCardIds = [];
+    pendingPrimaryTargetId = null;
+    pendingSecondaryTargetId = null;
+    pendingZoneChoiceActions = [];
+    pendingZoneCardChoiceActions = [];
+    previewTargetIds = [];
+    selectedCardId = null;
+    render();
+    ensureAutoLoop();
+  });
+
+  const confirmButton = app.querySelector<HTMLButtonElement>("button[data-role='spear-compose-confirm']");
+  confirmButton?.addEventListener("click", () => {
+    if (!spearComposeMode || selectedSpearCostCardIds.length !== 2) {
+      return;
+    }
+
+    const pendingAction = getPendingSpearComposeAction(game);
+    if (!pendingAction) {
+      return;
+    }
+
+    const encodedAction: PlayCardAction = {
+      ...pendingAction,
+      cardId: `__virtual_spear_slash__::${selectedSpearCostCardIds.join(",")}`
+    };
+
+    spearComposeMode = false;
+    selectedSpearCostCardIds = [];
+    previewTargetIds = [];
+    selectedCardId = null;
+    pendingPrimaryTargetId = null;
+    pendingSecondaryTargetId = null;
+    pendingZoneChoiceActions = [];
+    pendingZoneCardChoiceActions = [];
+    executeHumanChosenAction(encodedAction);
+  });
+
+  const cancelButton = app.querySelector<HTMLButtonElement>("button[data-role='spear-compose-cancel']");
+  cancelButton?.addEventListener("click", () => {
+    if (!spearComposeMode) {
+      return;
+    }
+
+    spearComposeMode = false;
+    selectedSpearCostCardIds = [];
+    previewTargetIds = [];
+    selectedCardId = null;
+    pendingPrimaryTargetId = null;
+    pendingSecondaryTargetId = null;
+    pendingZoneChoiceActions = [];
+    pendingZoneCardChoiceActions = [];
+    render();
+    ensureAutoLoop();
   });
 }
 
@@ -2775,11 +3323,6 @@ function getPendingHumanResponseForAiAction(state: Game, action: TurnAction): Pe
     };
   }
 
-  const trickNeedsNullifyFirst = kind === "duel" || kind === "barbarian" || kind === "archery";
-  if (trickNeedsNullifyFirst && mayHaveAnyNullifyResponder(state)) {
-    return null;
-  }
-
   if (kind === "slash" && action.targetId === human.id) {
     const source = state.players.find((player) => player.id === action.actorId);
     if (
@@ -2873,10 +3416,11 @@ function getPendingHumanResponseForAiAction(state: Game, action: TurnAction): Pe
     };
   }
 
-  if (shouldPromptHumanPeachResponseForAiAction(state, action)) {
+  const peachPromptMessage = getHumanPeachPromptMessageForAiAction(state, action);
+  if (peachPromptMessage) {
     return {
       kind: "peach",
-      message: "若有角色进入濒死，是否使用【桃】参与救援？",
+      message: peachPromptMessage,
       action,
       previewCardEventMessage,
       allowRespond: canRespondWithPeach(state, human.id)
@@ -3006,30 +3550,43 @@ function actionMayRequireSlashFromPlayer(state: Game, action: TurnAction, inferr
   return false;
 }
 
-function shouldPromptHumanPeachResponseForAiAction(state: Game, action: TurnAction): boolean {
+function getHumanPeachPromptMessageForAiAction(state: Game, action: TurnAction): string | null {
   if (action.type !== "play-card") {
-    return false;
+    return null;
   }
 
   const human = getHumanPlayer(state);
   if (!human.alive || !canRespondWithPeach(state, human.id)) {
-    return false;
+    return null;
+  }
+
+  const likelyTargets = getLikelyDyingTargetsForAiAction(state, action);
+  if (likelyTargets.length === 0) {
+    return null;
+  }
+
+  const targetNames = likelyTargets.map((target) => target.name).join("、");
+  return `当前濒死：${targetNames}。是否使用【桃】参与救援？`;
+}
+
+function getLikelyDyingTargetsForAiAction(state: Game, action: TurnAction): PlayerState[] {
+  if (action.type !== "play-card") {
+    return [];
   }
 
   const kind = inferActionCardKindForResponse(state, action);
   if (!kind) {
-    return false;
+    return [];
   }
 
   const targetIds = getPotentialDyingTargetsForAction(state, action, kind);
   if (targetIds.length === 0) {
-    return false;
+    return [];
   }
 
-  return targetIds.some((targetId) => {
-    const target = state.players.find((player) => player.id === targetId);
-    return target !== undefined && target.alive && target.hp <= 1;
-  });
+  return targetIds
+    .map((targetId) => state.players.find((player) => player.id === targetId))
+    .filter((target): target is PlayerState => Boolean(target && target.alive && target.hp <= 1));
 }
 
 function getPotentialDyingTargetsForAction(state: Game, action: TurnAction, kind: string): string[] {
@@ -3071,6 +3628,69 @@ function queuePendingBladeFollowUpPrompt(): boolean {
   return true;
 }
 
+function queuePendingDuelPrompt(): boolean {
+  const pending = game.pendingDuel;
+  if (!pending) {
+    return false;
+  }
+
+  const human = getHumanPlayer(game);
+  if (pending.currentId !== human.id) {
+    return false;
+  }
+
+  pendingHumanResponse = {
+    kind: "slash",
+    message: "决斗：是否打出【杀】？",
+    action: { type: "end-play-phase", actorId: human.id },
+    allowRespond: canRespondWithSlash(game, human.id)
+  };
+  return true;
+}
+
+function queuePendingIceSwordPrompt(): boolean {
+  const pending = game.pendingIceSword;
+  if (!pending) {
+    return false;
+  }
+
+  const human = getHumanPlayer(game);
+  if (pending.sourceId !== human.id) {
+    return false;
+  }
+
+  const target = game.players.find((player) => player.id === pending.targetId);
+  pendingHumanResponse = {
+    kind: "ice-sword",
+    message: `是否发动寒冰剑？（防止本次伤害并弃置 ${target?.name ?? "目标"} 的两张牌）`,
+    action: { type: "end-play-phase", actorId: human.id },
+    allowRespond: true
+  };
+  return true;
+}
+
+function queuePendingAxeStrikePrompt(): boolean {
+  const pending = game.pendingAxeStrike;
+  if (!pending) {
+    return false;
+  }
+
+  const human = getHumanPlayer(game);
+  if (pending.sourceId !== human.id) {
+    return false;
+  }
+
+  selectedAxeCostCardIds = [];
+  const target = game.players.find((player) => player.id === pending.targetId);
+  pendingHumanResponse = {
+    kind: "axe-strike",
+    message: `${target?.name ?? "目标"} 打出【闪】后，是否发动贯石斧？（从手牌/装备区弃置两张牌）`,
+    action: { type: "end-play-phase", actorId: human.id },
+    allowRespond: getPendingAxeCostOptions(game).length >= 2
+  };
+  return true;
+}
+
 function bindHandButtons(legalActions: TurnAction[]): void {
   const playableSourceIds = new Set(
     legalActions.map((action) => getActionSourceCardId(action)).filter((cardId): cardId is string => cardId !== null)
@@ -3081,6 +3701,24 @@ function bindHandButtons(legalActions: TurnAction[]): void {
     button.addEventListener("click", () => {
       const cardId = button.dataset.cardId;
       if (!cardId) {
+        return;
+      }
+
+      if (pendingHumanResponse?.kind === "axe-strike") {
+        toggleAxeCostSelection(cardId);
+        render();
+        ensureAutoLoop();
+        return;
+      }
+
+      if (spearComposeMode) {
+        if (selectedSpearCostCardIds.includes(cardId)) {
+          selectedSpearCostCardIds = selectedSpearCostCardIds.filter((id) => id !== cardId);
+        } else if (selectedSpearCostCardIds.length < 2) {
+          selectedSpearCostCardIds = [...selectedSpearCostCardIds, cardId];
+        }
+        render();
+        ensureAutoLoop();
         return;
       }
 
@@ -3532,6 +4170,15 @@ function bindPlayerTargetButtons(selectedCardActions: TurnAction[]): void {
       }
 
       const action = choosePreferredAction(primaryActions);
+      if (spearComposeMode && action.type === "play-card" && action.cardId === "__virtual_spear_slash__") {
+        pendingPrimaryTargetId = playerId;
+        pendingSecondaryTargetId = null;
+        previewTargetIds = [playerId];
+        render();
+        ensureAutoLoop();
+        return;
+      }
+
       previewTargetIds = [];
       selectedCardId = null;
       pendingPrimaryTargetId = null;
@@ -3541,6 +4188,19 @@ function bindPlayerTargetButtons(selectedCardActions: TurnAction[]): void {
       executeHumanChosenAction(action);
     });
   });
+}
+
+function isDirectSkillAction(action: TurnAction): action is PlayCardAction {
+  return (
+    action.type === "play-card" &&
+    action.cardId.startsWith("__virtual_") &&
+    !action.cardId.includes("::") &&
+    !action.targetId &&
+    !action.secondaryTargetId &&
+    !action.tertiaryTargetId &&
+    !action.targetZone &&
+    !action.targetCardId
+  );
 }
 
 function bindInlineEndPlayButton(endPlayAction: TurnAction | null): void {
@@ -3573,7 +4233,7 @@ function bindZoneChoiceButtons(): void {
         return;
       }
 
-      const candidate = pendingZoneChoiceActions.filter((action) => action.targetZone === zone);
+      const candidate = pendingZoneChoiceActions.filter((action) => (action.targetZone ?? "hand") === zone);
       if (candidate.length === 0) {
         return;
       }
@@ -3654,6 +4314,21 @@ function executeHumanChosenAction(action: TurnAction): void {
   disableHumanAutoNullifyForAction(game, action);
   applyAction(game, action);
   clearResponseDecisionState(game);
+  if (queuePendingDuelPrompt()) {
+    render();
+    ensureAutoLoop();
+    return;
+  }
+  if (queuePendingAxeStrikePrompt()) {
+    render();
+    ensureAutoLoop();
+    return;
+  }
+  if (queuePendingIceSwordPrompt()) {
+    render();
+    ensureAutoLoop();
+    return;
+  }
   if (queuePendingBladeFollowUpPrompt()) {
     render();
     ensureAutoLoop();
@@ -3767,6 +4442,14 @@ function runOneTick(): void {
     disableHumanAutoNullifyForAction(game, pendingMassAction);
     applyAction(game, pendingMassAction);
     clearResponseDecisionState(game);
+    if (
+      queuePendingDuelPrompt() ||
+      queuePendingAxeStrikePrompt() ||
+      queuePendingIceSwordPrompt() ||
+      queuePendingBladeFollowUpPrompt()
+    ) {
+      return;
+    }
     return;
   }
 
@@ -3775,6 +4458,10 @@ function runOneTick(): void {
   }
 
   if (autoChooseHarvestForAiIfNeeded()) {
+    return;
+  }
+
+  if (queuePendingDuelPrompt()) {
     return;
   }
 
@@ -3816,6 +4503,9 @@ function runOneTick(): void {
   disableHumanAutoNullifyForAction(game, action);
   applyAction(game, action);
   clearResponseDecisionState(game);
+  if (queuePendingDuelPrompt() || queuePendingAxeStrikePrompt() || queuePendingIceSwordPrompt() || queuePendingBladeFollowUpPrompt()) {
+    return;
+  }
   if (action.type === "end-play-phase") {
     stepPhase(game);
   }
@@ -3833,6 +4523,14 @@ function runAutoUntilHumanChoice(maxTicks = 500): void {
       disableHumanAutoNullifyForAction(game, pendingMassAction);
       applyAction(game, pendingMassAction);
       clearResponseDecisionState(game);
+      if (
+        queuePendingDuelPrompt() ||
+        queuePendingAxeStrikePrompt() ||
+        queuePendingIceSwordPrompt() ||
+        queuePendingBladeFollowUpPrompt()
+      ) {
+        break;
+      }
       ticks += 1;
       continue;
     }
@@ -3844,6 +4542,10 @@ function runAutoUntilHumanChoice(maxTicks = 500): void {
     if (autoChooseHarvestForAiIfNeeded()) {
       ticks += 1;
       continue;
+    }
+
+    if (queuePendingDuelPrompt()) {
+      break;
     }
 
     if (
@@ -3883,6 +4585,9 @@ function runAutoUntilHumanChoice(maxTicks = 500): void {
     disableHumanAutoNullifyForAction(game, action);
     applyAction(game, action);
     clearResponseDecisionState(game);
+    if (queuePendingDuelPrompt() || queuePendingAxeStrikePrompt() || queuePendingIceSwordPrompt() || queuePendingBladeFollowUpPrompt()) {
+      break;
+    }
     if (action.type === "end-play-phase") {
       stepPhase(game);
     }

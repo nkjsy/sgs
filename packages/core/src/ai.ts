@@ -14,6 +14,23 @@ const VIRTUAL_QIXI_CARD_ID_PREFIX = "__virtual_qixi__::";
 const VIRTUAL_LIJIAN_CARD_ID_PREFIX = "__virtual_lijian__::";
 const VIRTUAL_QINGNANG_CARD_ID_PREFIX = "__virtual_qingnang__::";
 
+const WEAPON_BASE_SCORE: Partial<Record<CardKind, number>> = {
+  weapon_crossbow: 11,
+  weapon_qinggang_sword: 9,
+  weapon_blade: 8,
+  weapon_ice_sword: 8,
+  weapon_spear: 7,
+  weapon_axe: 7,
+  weapon_halberd: 7,
+  weapon_kylin_bow: 6,
+  weapon_double_sword: 6
+};
+
+const ARMOR_BASE_SCORE: Partial<Record<CardKind, number>> = {
+  armor_eight_diagram: 8,
+  armor_renwang_shield: 7
+};
+
 type AiPerception = {
   relationByPlayerId: Record<string, number>;
   inferredCampByPlayerId: Record<string, "lord-side" | "rebel-side" | "unknown">;
@@ -205,13 +222,13 @@ export function chooseAiAction(context: AiDecisionContext): TurnAction {
     return delayedAction;
   }
 
-  const equipmentAction = legal.find((action) => {
+  const equipmentActions = legal.filter((action): action is PlayCardAction => {
     if (!isPlayCardAction(action)) {
       return false;
     }
-    const cardKind = getActionCardKind(context, action);
 
-    if (
+    const cardKind = getActionCardKind(context, action);
+    return (
       cardKind === "weapon_crossbow" ||
       cardKind === "weapon_double_sword" ||
       cardKind === "weapon_qinggang_sword" ||
@@ -220,28 +237,25 @@ export function chooseAiAction(context: AiDecisionContext): TurnAction {
       cardKind === "weapon_axe" ||
       cardKind === "weapon_halberd" ||
       cardKind === "weapon_kylin_bow" ||
-      cardKind === "weapon_ice_sword"
-    ) {
-      return !context.actor.equipment.weapon;
-    }
-
-    if (cardKind === "armor_eight_diagram" || cardKind === "armor_renwang_shield") {
-      return !context.actor.equipment.armor;
-    }
-
-    if (cardKind === "horse_plus" || cardKind === "horse_jueying" || cardKind === "horse_dilu" || cardKind === "horse_zhuahuangfeidian") {
-      return !context.actor.equipment.horsePlus;
-    }
-
-    if (cardKind === "horse_minus" || cardKind === "horse_chitu" || cardKind === "horse_dayuan" || cardKind === "horse_zixing") {
-      return !context.actor.equipment.horseMinus;
-    }
-
-    return false;
+      cardKind === "weapon_ice_sword" ||
+      cardKind === "armor_eight_diagram" ||
+      cardKind === "armor_renwang_shield" ||
+      cardKind === "horse_plus" ||
+      cardKind === "horse_jueying" ||
+      cardKind === "horse_dilu" ||
+      cardKind === "horse_zhuahuangfeidian" ||
+      cardKind === "horse_minus" ||
+      cardKind === "horse_chitu" ||
+      cardKind === "horse_dayuan" ||
+      cardKind === "horse_zixing"
+    );
   });
 
-  if (equipmentAction) {
-    return equipmentAction;
+  if (equipmentActions.length > 0) {
+    const bestEquipmentAction = pickHighestScoreAction(equipmentActions, (action) => scoreEquipmentAction(context, action));
+    if (bestEquipmentAction && scoreEquipmentAction(context, bestEquipmentAction) > 0) {
+      return bestEquipmentAction;
+    }
   }
 
   const aoeAction = legal.find((action) => {
@@ -261,9 +275,19 @@ export function chooseAiAction(context: AiDecisionContext): TurnAction {
       (player) => player.alive && player.id !== context.actor.id && isLikelyAlly(context, perception, player)
     );
 
-    const lowHpEnemies = enemies.filter((player) => player.hp <= 1).length;
-    const lowHpAllies = allies.filter((player) => player.hp <= 1).length;
-    const score = enemies.length * 2 + lowHpEnemies - allies.length * 2 - lowHpAllies * 2;
+    const enemyImpact = enemies.reduce((sum, player) => {
+      const hpPressure = player.hp <= 1 ? 3 : player.hp <= 2 ? 2 : 1;
+      const responseWeakness = player.hand.length <= 1 ? 2 : player.hand.length <= 2 ? 1 : 0;
+      return sum + hpPressure + responseWeakness;
+    }, 0);
+
+    const allyImpact = allies.reduce((sum, player) => {
+      const hpRisk = player.hp <= 1 ? 4 : player.hp <= 2 ? 2 : 1;
+      const responseRisk = player.hand.length <= 1 ? 2 : player.hand.length <= 2 ? 1 : 0;
+      return sum + hpRisk + responseRisk;
+    }, 0);
+
+    const score = enemyImpact - allyImpact;
     return score > 0;
   });
 
@@ -526,6 +550,48 @@ function scoreSupportAction(
   return Number.NEGATIVE_INFINITY;
 }
 
+function scoreEquipmentAction(context: AiDecisionContext, action: PlayCardAction): number {
+  const kind = getActionCardKind(context, action);
+  if (!kind) {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  const actor = context.actor;
+  const slashCount = actor.hand.reduce((count, card) => (card.kind === "slash" ? count + 1 : count), 0);
+
+  if (kind in WEAPON_BASE_SCORE) {
+    const base = WEAPON_BASE_SCORE[kind as CardKind] ?? 0;
+    const currentKind = actor.equipment.weapon?.kind;
+    const current = currentKind ? WEAPON_BASE_SCORE[currentKind] ?? 0 : 0;
+    const crossbowBonus = kind === "weapon_crossbow" && slashCount >= 2 ? 2 : 0;
+    const replacePenalty = currentKind ? 1 : 0;
+    return base + crossbowBonus - current - replacePenalty;
+  }
+
+  if (kind in ARMOR_BASE_SCORE) {
+    const base = ARMOR_BASE_SCORE[kind as CardKind] ?? 0;
+    const currentKind = actor.equipment.armor?.kind;
+    const current = currentKind ? ARMOR_BASE_SCORE[currentKind] ?? 0 : 0;
+    const replacePenalty = currentKind ? 1 : 0;
+    return base - current - replacePenalty;
+  }
+
+  if (
+    kind === "horse_plus" ||
+    kind === "horse_jueying" ||
+    kind === "horse_dilu" ||
+    kind === "horse_zhuahuangfeidian"
+  ) {
+    return actor.equipment.horsePlus ? -1 : 3;
+  }
+
+  if (kind === "horse_minus" || kind === "horse_chitu" || kind === "horse_dayuan" || kind === "horse_zixing") {
+    return actor.equipment.horseMinus ? -1 : 3;
+  }
+
+  return Number.NEGATIVE_INFINITY;
+}
+
 function countEquipmentCards(player: AiDecisionContext["actor"]): number {
   return [player.equipment.weapon, player.equipment.armor, player.equipment.horsePlus, player.equipment.horseMinus].filter(
     (item) => item !== null
@@ -607,13 +673,24 @@ function buildAiPerception(context: AiDecisionContext): AiPerception {
   const rescuePattern = new RegExp(`(${namePattern}) 使用桃救回 (${namePattern})`);
   const healPattern = new RegExp(`(${namePattern}) 发动(?:青囊|结姻).*?(?:令|与) (${namePattern}) .*回复`);
 
-  for (const event of context.state.events) {
+  for (let index = 0; index < context.state.events.length; index += 1) {
+    const event = context.state.events[index];
+    const recencyWeight = computeEventRecencyWeight(context.state.events.length, index);
+
     const hostileMatch = event.message.match(hostilePattern);
     if (hostileMatch) {
       const source = findPlayerByName(context, hostileMatch[1]);
       const target = findPlayerByName(context, hostileMatch[2]);
       if (source && target) {
-        applyHostileEvidence(context, relationByPlayerId, inferredCampByPlayerId, actorCamp, source.id, target.id, 1.5);
+        applyHostileEvidence(
+          context,
+          relationByPlayerId,
+          inferredCampByPlayerId,
+          actorCamp,
+          source.id,
+          target.id,
+          1.5 * recencyWeight
+        );
       }
     }
 
@@ -622,7 +699,15 @@ function buildAiPerception(context: AiDecisionContext): AiPerception {
       const source = findPlayerByName(context, damageMatch[1]);
       const target = findPlayerByName(context, damageMatch[2]);
       if (source && target) {
-        applyHostileEvidence(context, relationByPlayerId, inferredCampByPlayerId, actorCamp, source.id, target.id, 2.5);
+        applyHostileEvidence(
+          context,
+          relationByPlayerId,
+          inferredCampByPlayerId,
+          actorCamp,
+          source.id,
+          target.id,
+          2.5 * recencyWeight
+        );
       }
     }
 
@@ -631,7 +716,15 @@ function buildAiPerception(context: AiDecisionContext): AiPerception {
       const source = findPlayerByName(context, rescueMatch[1]);
       const target = findPlayerByName(context, rescueMatch[2]);
       if (source && target) {
-        applySupportEvidence(context, relationByPlayerId, inferredCampByPlayerId, actorCamp, source.id, target.id, 2.5);
+        applySupportEvidence(
+          context,
+          relationByPlayerId,
+          inferredCampByPlayerId,
+          actorCamp,
+          source.id,
+          target.id,
+          2.5 * recencyWeight
+        );
       }
     }
 
@@ -640,7 +733,15 @@ function buildAiPerception(context: AiDecisionContext): AiPerception {
       const source = findPlayerByName(context, healMatch[1]);
       const target = findPlayerByName(context, healMatch[2]);
       if (source && target) {
-        applySupportEvidence(context, relationByPlayerId, inferredCampByPlayerId, actorCamp, source.id, target.id, 1.5);
+        applySupportEvidence(
+          context,
+          relationByPlayerId,
+          inferredCampByPlayerId,
+          actorCamp,
+          source.id,
+          target.id,
+          1.5 * recencyWeight
+        );
       }
     }
   }
@@ -755,4 +856,13 @@ function getActorCamp(identity: Identity): "lord-side" | "rebel-side" | "renegad
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function computeEventRecencyWeight(total: number, index: number): number {
+  if (total <= 1) {
+    return 1;
+  }
+
+  const ratio = index / (total - 1);
+  return 0.6 + ratio * 0.8;
 }

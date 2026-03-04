@@ -34,6 +34,8 @@ export type ResponseKind =
   | "dodge"
   | "slash"
   | "nullify"
+  | "ice-sword"
+  | "axe-strike"
   | "blade-follow-up"
   | "peach"
   | "hujia"
@@ -44,6 +46,8 @@ export interface ResponsePreference {
   dodge?: boolean;
   slash?: boolean;
   nullify?: boolean;
+  "ice-sword"?: boolean;
+  "axe-strike"?: boolean;
   "blade-follow-up"?: boolean;
   "double-sword"?: boolean;
   peach?: boolean;
@@ -243,6 +247,8 @@ export interface GameState {
   discard: Card[];
   /** 事件日志。 */
   events: GameEvent[];
+  /** 最新一次打出的牌（用于界面展示）。 */
+  latestPlayedCard: Card | null;
   /** 当前轮次计数。 */
   turnCount: number;
   /** 当前行动角色在本回合已使用【杀】的次数。 */
@@ -273,6 +279,10 @@ export interface GameState {
   responsePreferenceByPlayer: Record<string, ResponsePreference>;
   /** 当前回合各角色的响应决策队列。 */
   responseDecisionQueueByPlayer: Record<string, Partial<Record<ResponseKind, boolean[]>>>;
+  /** 各角色是否启用决斗逐次手动响应模式。 */
+  duelPromptModeByPlayer: Record<string, boolean>;
+  /** 各角色是否启用桃救援手动确认模式。 */
+  peachRescuePromptModeByPlayer: Record<string, boolean>;
   /** 各角色预结算的八卦阵判定结果队列（按响应次序消费）。 */
   preparedEightDiagramResultByPlayer: Record<string, boolean[]>;
   /** 各角色是否启用手动弃牌模式。 */
@@ -287,10 +297,37 @@ export interface GameState {
   pendingMassTrick: PendingMassTrickState | null;
   /** 各角色是否启用方天画戟手动多目标模式。 */
   halberdManualTargetModeByPlayer: Record<string, boolean>;
+  /** 各角色是否启用贯石斧“闪后确认”模式。 */
+  axeStrikePromptModeByPlayer: Record<string, boolean>;
+  /** 各角色是否启用寒冰剑“命中前确认”模式。 */
+  iceSwordPromptModeByPlayer: Record<string, boolean>;
+  /** 寒冰剑防伤待确认状态。 */
+  pendingIceSword: {
+    sourceId: string;
+    targetId: string;
+    slashCard: Card;
+    shouldDiscardSlash: boolean;
+  } | null;
+  /** 贯石斧追伤待确认状态。 */
+  pendingAxeStrike: {
+    sourceId: string;
+    targetId: string;
+    slashCard: Card;
+    slashLabel: string;
+    shouldDiscardSlash: boolean;
+  } | null;
   /** 各角色是否启用青龙偃月刀“闪后确认”模式。 */
   bladeFollowUpPromptModeByPlayer: Record<string, boolean>;
   /** 青龙偃月刀追击待确认状态。 */
   pendingBladeFollowUp: { sourceId: string; targetId: string } | null;
+  /** 决斗响应待确认状态（用于逐次询问人类是否打出杀）。 */
+  pendingDuel: {
+    sourceId: string;
+    targetId: string;
+    currentId: string;
+    opponentId: string;
+    duelCard?: Card;
+  } | null;
   /** 获胜阵营，未结束时为空。 */
   winner: "lord-side" | "rebel-side" | "renegade" | null;
   /** 随机种子。 */

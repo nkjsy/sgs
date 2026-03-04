@@ -129,3 +129,57 @@ test("ai should prioritize behavior inference over hidden identity label", () =>
   assert.equal(action.cardId, "ai-slash-infer-1");
   assert.equal(action.targetId, targetA.id);
 });
+
+/**
+ * 验证 AI 会在收益更高时替换已有武器。
+ */
+test("ai should replace current weapon with higher-value weapon", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.equipment.weapon = { id: "ai-old-weapon", kind: "weapon_double_sword", suit: "spade", point: 2 };
+  actor.hand = [
+    { id: "ai-equip-crossbow", kind: "weapon_crossbow", suit: "club", point: 1 },
+    { id: "ai-slash-equip-1", kind: "slash", suit: "spade", point: 7 },
+    { id: "ai-slash-equip-2", kind: "slash", suit: "heart", point: 8 }
+  ];
+
+  const action = chooseAiAction(createAiDecisionContext(state, actor.id));
+
+  assert.equal(action.type, "play-card");
+  assert.equal(action.cardId, "ai-equip-crossbow");
+});
+
+/**
+ * 验证行为推断会给予近期事件更高权重。
+ */
+test("ai should weight recent hostility higher than old hostility", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[2];
+  const oldHostile = state.players[1];
+  const recentHostile = state.players[3];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "ai-slash-recent-1", kind: "slash", suit: "spade", point: 6 }];
+
+  state.events.push({ type: "damage", message: `${oldHostile.name} 对 ${actor.name} 造成 1 点伤害` });
+  state.events.push({ type: "rescue", message: `${oldHostile.name} 使用桃救回 ${actor.name}` });
+  state.events.push({ type: "damage", message: `${recentHostile.name} 对 ${actor.name} 造成 1 点伤害` });
+
+  const action = chooseAiAction(createAiDecisionContext(state, actor.id));
+
+  assert.equal(action.type, "play-card");
+  assert.equal(action.cardId, "ai-slash-recent-1");
+  assert.equal(action.targetId, recentHostile.id);
+});

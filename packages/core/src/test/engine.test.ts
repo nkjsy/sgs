@@ -7,7 +7,14 @@ import {
   getPendingMassTrickAction,
   getLegalActions,
   queueResponseDecision,
+  resolvePendingAxeStrike,
+  resolvePendingDuelResponse,
+  resolvePendingIceSword,
+  setAxeStrikePromptMode,
+  setDuelPromptMode,
+  setIceSwordPromptMode,
   setLuoyiChoice,
+  setPeachRescuePromptMode,
   setResponsePreference,
   stepPhase
 } from "../engine";
@@ -2389,6 +2396,51 @@ test("wushuang skill should require two slashes from opponent in duel", () => {
 });
 
 /**
+ * 验证决斗在玩家每次轮到打出【杀】时会进入待确认状态，而非自动连打。
+ */
+test("duel should pause for human slash response each round", () => {
+  const state = createInitialGame(42);
+  const target = state.players[0];
+  const source = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  setDuelPromptMode(state, target.id, true);
+  source.hand = [
+    { id: "duel-pause-1", kind: "duel", suit: "spade", point: 12 },
+    { id: "duel-pause-src-slash-a", kind: "slash", suit: "club", point: 6 },
+    { id: "duel-pause-src-slash-b", kind: "slash", suit: "diamond", point: 9 }
+  ];
+  target.hand = [
+    { id: "duel-pause-tar-slash-a", kind: "slash", suit: "heart", point: 7 },
+    { id: "duel-pause-tar-slash-b", kind: "slash", suit: "spade", point: 8 }
+  ];
+
+  queueResponseDecision(state, target.id, "slash", true);
+  const hpBefore = target.hp;
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "duel-pause-1",
+    targetId: target.id
+  });
+
+  assert.ok(state.pendingDuel);
+  assert.equal(state.pendingDuel?.currentId, target.id);
+  assert.equal(target.hp, hpBefore);
+
+  resolvePendingDuelResponse(state, false);
+
+  assert.equal(state.pendingDuel, null);
+  assert.equal(target.hp, hpBefore - 1);
+});
+
+/**
  * 验证赵云【龙胆】可在出牌阶段将【闪】当【杀】使用。
  */
 test("longdan skill should allow dodge as slash in play phase", () => {
@@ -2803,6 +2855,114 @@ test("ganglie skill should deal damage when source has less than two cards", () 
 });
 
 /**
+ * 验证夏侯惇濒死后被救回时，仍会正常触发【刚烈】。
+ */
+test("ganglie should still trigger when owner is rescued from dying", () => {
+  const state = createInitialGame(42);
+  const rescuer = state.players[0];
+  const owner = state.players[1];
+  const source = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, owner.id, STANDARD_SKILL_IDS.xiahoudunGanglie);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  owner.hp = 1;
+  rescuer.hand = [{ id: "ganglie-rescue-peach-1", kind: "peach", suit: "heart", point: 6 }];
+  source.hand = [
+    { id: "ganglie-rescue-slash-1", kind: "slash", suit: "spade", point: 11 },
+    { id: "ganglie-rescue-discard-a", kind: "dodge", suit: "club", point: 2 },
+    { id: "ganglie-rescue-discard-b", kind: "duel", suit: "diamond", point: 4 }
+  ];
+  state.deck = [{ id: "ganglie-rescue-judge-black", kind: "slash", suit: "spade", point: 9 }, ...state.deck];
+
+  queueResponseDecision(state, rescuer.id, "peach", true);
+  setResponsePreference(state, rescuer.id, "peach", false);
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "ganglie-rescue-slash-1",
+    targetId: owner.id
+  });
+
+  assert.equal(owner.alive, true);
+  assert.equal(owner.hp, 1);
+  assert.equal(source.hand.length, 0);
+  assert.ok(state.discard.some((card) => card.id === "ganglie-rescue-discard-a"));
+  assert.ok(state.discard.some((card) => card.id === "ganglie-rescue-discard-b"));
+  assert.ok(state.events.some((event) => event.type === "skill" && event.message.includes("发动刚烈")));
+});
+
+/**
+ * 验证玩家在未明确允许时不会自动使用【桃】救援他人。
+ */
+test("human rescuer should not auto-use peach without explicit response allowance", () => {
+  const state = createInitialGame(42);
+  const rescuer = state.players[0];
+  const target = state.players[1];
+  const source = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  setPeachRescuePromptMode(state, rescuer.id, true);
+  target.hp = 1;
+  rescuer.hand = [{ id: "manual-rescue-peach-1", kind: "peach", suit: "heart", point: 7 }];
+  source.hand = [{ id: "manual-rescue-slash-1", kind: "slash", suit: "spade", point: 8 }];
+
+  setResponsePreference(state, rescuer.id, "peach", false);
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "manual-rescue-slash-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.alive, false);
+  assert.equal(rescuer.hand.some((card) => card.id === "manual-rescue-peach-1"), true);
+});
+
+/**
+ * 验证玩家即便桃响应偏好为允许，未明确入队“是”时也不会自动救援他人。
+ */
+test("human rescuer should not auto-use peach by preference without queued yes", () => {
+  const state = createInitialGame(42);
+  const rescuer = state.players[0];
+  const target = state.players[1];
+  const source = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  setPeachRescuePromptMode(state, rescuer.id, true);
+  target.hp = 1;
+  rescuer.hand = [{ id: "manual-rescue-pref-peach-1", kind: "peach", suit: "heart", point: 8 }];
+  source.hand = [{ id: "manual-rescue-pref-slash-1", kind: "slash", suit: "spade", point: 6 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "manual-rescue-pref-slash-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.alive, false);
+  assert.equal(rescuer.hand.some((card) => card.id === "manual-rescue-pref-peach-1"), true);
+});
+
+/**
  * 验证八卦阵判定为红色时可视为打出【闪】抵消【杀】。
  */
 test("eight diagram should auto-dodge slash on red judgment", () => {
@@ -2923,6 +3083,89 @@ test("axe should force slash to hit after dodge by discarding two cards", () => 
 });
 
 /**
+ * 验证贯石斧手动确认模式会产生待确认状态，并在确认后生效。
+ */
+test("axe prompt mode should require explicit confirm before forced hit", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.equipment.weapon = { id: "axe-prompt-1", kind: "weapon_axe", suit: "diamond", point: 5 };
+  actor.hand = [
+    { id: "slash-axe-prompt-1", kind: "slash", suit: "spade", point: 10 },
+    { id: "axe-prompt-cost-a", kind: "dodge", suit: "heart", point: 2 },
+    { id: "axe-prompt-cost-b", kind: "peach", suit: "diamond", point: 4 }
+  ];
+  target.hand = [{ id: "target-dodge-axe-prompt-1", kind: "dodge", suit: "club", point: 7 }];
+  setAxeStrikePromptMode(state, actor.id, true);
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-axe-prompt-1",
+    targetId: target.id
+  });
+
+  assert.ok(state.pendingAxeStrike);
+  assert.equal(target.hp, 4);
+
+  resolvePendingAxeStrike(state, true);
+
+  assert.equal(state.pendingAxeStrike, null);
+  assert.equal(target.hp, 3);
+  assert.ok(state.discard.some((card) => card.id === "axe-prompt-cost-a"));
+  assert.ok(state.discard.some((card) => card.id === "axe-prompt-cost-b"));
+});
+
+/**
+ * 验证贯石斧可将装备区牌作为发动代价之一。
+ */
+test("axe prompt mode should allow choosing equipment card as cost", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.equipment.weapon = { id: "axe-equip-cost-weapon", kind: "weapon_axe", suit: "diamond", point: 5 };
+  actor.equipment.armor = { id: "axe-equip-cost-armor", kind: "armor_eight_diagram", suit: "club", point: 2 };
+  actor.hand = [
+    { id: "slash-axe-equip-cost", kind: "slash", suit: "spade", point: 10 },
+    { id: "axe-equip-cost-hand", kind: "dodge", suit: "heart", point: 9 }
+  ];
+  target.hand = [{ id: "target-dodge-axe-equip-cost", kind: "dodge", suit: "heart", point: 8 }];
+  setAxeStrikePromptMode(state, actor.id, true);
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-axe-equip-cost",
+    targetId: target.id
+  });
+
+  assert.ok(state.pendingAxeStrike);
+
+  resolvePendingAxeStrike(state, true, ["axe-equip-cost-armor", "axe-equip-cost-hand"]);
+
+  assert.equal(state.pendingAxeStrike, null);
+  assert.equal(target.hp, 3);
+  assert.equal(actor.equipment.weapon?.id, "axe-equip-cost-weapon");
+  assert.equal(actor.equipment.armor, null);
+  assert.ok(state.discard.some((card) => card.id === "axe-equip-cost-armor"));
+  assert.ok(state.discard.some((card) => card.id === "axe-equip-cost-hand"));
+});
+
+/**
  * 验证麒麟弓在【杀】造成伤害后可弃置目标坐骑。
  */
 test("kylin bow should discard target horse after slash damage", () => {
@@ -2980,6 +3223,41 @@ test("spear should allow virtual slash from two hand cards in play phase", () =>
   applyAction(state, virtualSlashAction);
   assert.equal(target.hp, hpBefore - 1);
   assert.equal(actor.hand.length, 0);
+});
+
+/**
+ * 验证丈八蛇矛可按指定两张手牌作为代价打出【杀】。
+ */
+test("spear should consume the selected two hand cards for virtual slash", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.equipment.weapon = { id: "spear-choose-1", kind: "weapon_spear", suit: "spade", point: 12 };
+  actor.hand = [
+    { id: "spear-choose-a", kind: "dodge", suit: "diamond", point: 2 },
+    { id: "spear-choose-b", kind: "peach", suit: "heart", point: 3 },
+    { id: "spear-choose-c", kind: "duel", suit: "club", point: 8 }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_spear_slash__::spear-choose-a,spear-choose-c",
+    targetId: target.id
+  });
+
+  assert.equal(actor.hand.length, 1);
+  assert.equal(actor.hand[0]?.id, "spear-choose-b");
+  assert.ok(state.discard.some((card) => card.id === "spear-choose-a"));
+  assert.ok(state.discard.some((card) => card.id === "spear-choose-c"));
+  assert.equal(state.discard.some((card) => card.id === "spear-choose-b"), false);
 });
 
 /**
@@ -3340,6 +3618,156 @@ test("ice sword should prevent slash damage and discard two target cards", () =>
   assert.equal(target.hand.length, 0);
   assert.ok(state.discard.some((card) => card.id === "target-card-ice-a"));
   assert.ok(state.discard.some((card) => card.id === "target-card-ice-b"));
+});
+
+/**
+ * 验证寒冰剑手动确认模式下，来源可选择不发动并正常造成伤害。
+ */
+test("ice sword manual prompt should allow source to decline and deal damage", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  setIceSwordPromptMode(state, actor.id, true);
+  actor.equipment.weapon = { id: "ice-sword-manual-1", kind: "weapon_ice_sword", suit: "spade", point: 2 };
+  actor.hand = [{ id: "slash-ice-manual-1", kind: "slash", suit: "spade", point: 10 }];
+  target.hand = [
+    { id: "target-card-ice-manual-a", kind: "peach", suit: "heart", point: 7 },
+    { id: "target-card-ice-manual-b", kind: "snatch", suit: "heart", point: 8 }
+  ];
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-ice-manual-1",
+    targetId: target.id
+  });
+
+  assert.ok(state.pendingIceSword);
+  resolvePendingIceSword(state, false);
+
+  assert.equal(state.pendingIceSword, null);
+  assert.equal(target.hp, hpBefore - 1);
+  assert.equal(target.hand.length, 2);
+});
+
+/**
+ * 验证 latestPlayedCard 始终记录最后一张实际打出的牌。
+ */
+test("latestPlayedCard should track the last played card", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hp = actor.maxHp - 1;
+  actor.hand = [
+    { id: "latest-card-slash-1", kind: "slash", suit: "spade", point: 7 },
+    { id: "latest-card-peach-1", kind: "peach", suit: "heart", point: 5 }
+  ];
+  target.hand = [];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "latest-card-slash-1",
+    targetId: target.id
+  });
+  assert.equal(state.latestPlayedCard?.id, "latest-card-slash-1");
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "latest-card-peach-1",
+    targetId: actor.id
+  });
+  assert.equal(state.latestPlayedCard?.id, "latest-card-peach-1");
+});
+
+/**
+ * 验证寒冰剑在手动确认模式下，来源可选择不发动并正常造成伤害。
+ */
+test("ice sword manual prompt should allow source to decline and deal damage", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.equipment.weapon = { id: "ice-sword-manual-1", kind: "weapon_ice_sword", suit: "spade", point: 2 };
+  actor.hand = [{ id: "slash-ice-manual-1", kind: "slash", suit: "spade", point: 10 }];
+  target.hand = [{ id: "target-card-ice-manual-a", kind: "peach", suit: "heart", point: 7 }];
+  setIceSwordPromptMode(state, actor.id, true);
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-ice-manual-1",
+    targetId: target.id
+  });
+
+  assert.ok(state.pendingIceSword);
+  resolvePendingIceSword(state, false);
+
+  assert.equal(state.pendingIceSword, null);
+  assert.equal(target.hp, hpBefore - 1);
+  assert.equal(target.hand.length, 1);
+});
+
+/**
+ * 验证 latestPlayedCard 始终记录最后一张打出的牌。
+ */
+test("latestPlayedCard should track the last played card", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [
+    { id: "latest-track-slash-1", kind: "slash", suit: "spade", point: 9 },
+    { id: "latest-track-duel-1", kind: "duel", suit: "heart", point: 1 }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "latest-track-slash-1",
+    targetId: target.id
+  });
+  assert.equal(state.latestPlayedCard?.id, "latest-track-slash-1");
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  state.slashUsedInTurn = 0;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "latest-track-duel-1",
+    targetId: target.id
+  });
+  assert.equal(state.latestPlayedCard?.id, "latest-track-duel-1");
 });
 
 /**
@@ -4056,6 +4484,60 @@ test("kurou skill should be reusable in the same play phase", () => {
 });
 
 /**
+ * 验证当前行动角色在自己回合内阵亡后，应按座次轮到其下一个存活角色。
+ */
+test("turn should advance to next alive seat when current player dies", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[2];
+  const nextAlive = state.players[3];
+  const target = state.players[4];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.huanggaiKurou);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hp = 2;
+  actor.hand = [{ id: "turn-order-dismantle-1", kind: "dismantle", suit: "spade", point: 7 }];
+  state.deck = [
+    { id: "turn-order-draw-a", kind: "slash", suit: "club", point: 2 },
+    { id: "turn-order-draw-b", kind: "dodge", suit: "spade", point: 3 },
+    { id: "turn-order-draw-c", kind: "duel", suit: "diamond", point: 5 },
+    { id: "turn-order-draw-d", kind: "nullify", suit: "club", point: 6 },
+    ...state.deck
+  ];
+  target.hand = [{ id: "turn-order-target-card-1", kind: "slash", suit: "club", point: 9 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_kurou__"
+  });
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "turn-order-dismantle-1",
+    targetId: target.id
+  });
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_kurou__"
+  });
+
+  stepPhase(state);
+
+  assert.equal(actor.alive, false);
+  assert.equal(state.currentPlayerId, nextAlive.id);
+  assert.equal(state.phase, "judge");
+});
+
+/**
  * 验证吕蒙【克己】在本回合未使用【杀】时可跳过弃牌阶段。
  */
 test("keji skill should skip discard when no slash used", () => {
@@ -4592,6 +5074,75 @@ test("lianying should trigger when dismantle removes the last hand card", () => 
 
   assert.equal(luxun.hand.length, 1);
   assert.equal(luxun.hand[0]?.id, "lianying-draw-after-dismantle");
+});
+
+/**
+ * 验证陆逊在【决斗】中打出最后一张【杀】后会触发【连营】。
+ */
+test("lianying should trigger when last slash is used in duel", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const luxun = state.players[3];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, luxun.id, STANDARD_SKILL_IDS.luxunLianying);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "lianying-duel-1", kind: "duel", suit: "spade", point: 6 }];
+  luxun.hand = [{ id: "lianying-duel-slash-1", kind: "slash", suit: "heart", point: 9 }];
+  state.deck = [{ id: "lianying-draw-after-duel", kind: "peach", suit: "diamond", point: 3 }, ...state.deck];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "lianying-duel-1",
+    targetId: luxun.id
+  });
+
+  assert.equal(luxun.hand.length, 1);
+  assert.equal(luxun.hand[0]?.id, "lianying-draw-after-duel");
+});
+
+/**
+ * 验证主公误杀忠臣弃置所有牌后，陆逊【连营】仍会触发摸1。
+ */
+test("lianying should trigger after lord punishment discards all cards", () => {
+  const state = createInitialGame(42);
+  const lord = state.players[0];
+  const loyalist = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, lord.id, STANDARD_SKILL_IDS.luxunLianying);
+
+  lord.identity = "lord";
+  loyalist.identity = "loyalist";
+  state.currentPlayerId = lord.id;
+  state.phase = "play";
+  loyalist.hp = 1;
+  lord.hand = [
+    { id: "punish-lianying-slash-1", kind: "slash", suit: "spade", point: 8 },
+    { id: "punish-lianying-keep-a", kind: "dodge", suit: "club", point: 4 },
+    { id: "punish-lianying-keep-b", kind: "duel", suit: "heart", point: 9 }
+  ];
+  state.deck = [{ id: "punish-lianying-draw-1", kind: "duel", suit: "diamond", point: 2 }, ...state.deck];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: lord.id,
+    cardId: "punish-lianying-slash-1",
+    targetId: loyalist.id
+  });
+
+  assert.equal(loyalist.alive, false);
+  assert.equal(lord.hand.length, 1);
+  assert.equal(lord.hand[0]?.id, "punish-lianying-draw-1");
 });
 
 /**
