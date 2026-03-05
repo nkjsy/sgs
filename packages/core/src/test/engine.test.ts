@@ -3738,6 +3738,47 @@ test("ice sword manual prompt should allow source to decline and deal damage", (
   assert.equal(target.hand.length, 2);
 });
 
+test("ice sword manual prompt should allow choosing equipment zone to discard", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  setIceSwordPromptMode(state, actor.id, true);
+  actor.equipment.weapon = { id: "ice-sword-manual-zone-1", kind: "weapon_ice_sword", suit: "spade", point: 2 };
+  actor.hand = [{ id: "slash-ice-manual-zone-1", kind: "slash", suit: "heart", point: 10 }];
+  target.hand = [
+    { id: "target-card-ice-manual-zone-hand-a", kind: "peach", suit: "heart", point: 7 },
+    { id: "target-card-ice-manual-zone-hand-b", kind: "snatch", suit: "heart", point: 8 }
+  ];
+  target.equipment.armor = { id: "target-card-ice-manual-zone-equip-1", kind: "armor_renwang_shield", suit: "club", point: 2 };
+  target.equipment.horsePlus = { id: "target-card-ice-manual-zone-equip-2", kind: "horse_jueying", suit: "diamond", point: 5 };
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-ice-manual-zone-1",
+    targetId: target.id
+  });
+
+  assert.ok(state.pendingIceSword);
+  resolvePendingIceSword(state, true, "equipment");
+
+  assert.equal(state.pendingIceSword, null);
+  assert.equal(target.hp, hpBefore);
+  assert.equal(target.hand.length, 2);
+  assert.equal(target.equipment.armor, null);
+  assert.equal(target.equipment.horsePlus, null);
+  assert.ok(state.discard.some((card) => card.id === "target-card-ice-manual-zone-equip-1"));
+  assert.ok(state.discard.some((card) => card.id === "target-card-ice-manual-zone-equip-2"));
+});
+
 /**
  * 验证 latestPlayedCard 始终记录最后一张实际打出的牌。
  */
@@ -4022,9 +4063,9 @@ test("luoyi skill should increase duel damage", () => {
  */
 test("tuxi skill should steal up to two cards and reduce draw", () => {
   const state = createInitialGame(42);
-  const actor = state.players[1];
+  const actor = state.players[2];
   const targetA = state.players[0];
-  const targetB = state.players[2];
+  const targetB = state.players[1];
 
   for (const player of state.players) {
     player.hand = [];
@@ -4049,12 +4090,70 @@ test("tuxi skill should steal up to two cards and reduce draw", () => {
   assert.equal(actor.hand.some((card) => card.id === "tuxi-deck-2"), false);
 });
 
+test("ai tuxi should not target same-camp lord-side ally", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[1];
+  const lord = state.players[0];
+  const rebel = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.zhangliaoTuxi);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "draw";
+  lord.hand = [{ id: "tuxi-lord-side-ally-1", kind: "dodge", suit: "heart", point: 4 }];
+  rebel.hand = [{ id: "tuxi-rebel-target-1", kind: "slash", suit: "spade", point: 8 }];
+  state.deck = [
+    { id: "tuxi-lord-safe-draw-1", kind: "peach", suit: "diamond", point: 6 },
+    { id: "tuxi-lord-safe-draw-2", kind: "nullify", suit: "club", point: 10 }
+  ];
+
+  stepPhase(state);
+
+  assert.equal(actor.hand.some((card) => card.id === "tuxi-lord-side-ally-1"), false);
+  assert.ok(actor.hand.some((card) => card.id === "tuxi-rebel-target-1"));
+  assert.ok(actor.hand.some((card) => card.id === "tuxi-lord-safe-draw-1"));
+  assert.equal(lord.hand.some((card) => card.id === "tuxi-lord-side-ally-1"), true);
+});
+
+test("ai tuxi should not target same-camp rebel ally", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[2];
+  const rebelAlly = state.players[3];
+  const lord = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.zhangliaoTuxi);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "draw";
+  rebelAlly.hand = [{ id: "tuxi-rebel-ally-1", kind: "dodge", suit: "heart", point: 4 }];
+  lord.hand = [{ id: "tuxi-lord-target-1", kind: "slash", suit: "spade", point: 8 }];
+  state.deck = [
+    { id: "tuxi-rebel-safe-draw-1", kind: "peach", suit: "diamond", point: 6 },
+    { id: "tuxi-rebel-safe-draw-2", kind: "nullify", suit: "club", point: 10 }
+  ];
+
+  stepPhase(state);
+
+  assert.equal(actor.hand.some((card) => card.id === "tuxi-rebel-ally-1"), false);
+  assert.ok(actor.hand.some((card) => card.id === "tuxi-lord-target-1"));
+  assert.ok(actor.hand.some((card) => card.id === "tuxi-rebel-safe-draw-1"));
+  assert.equal(rebelAlly.hand.some((card) => card.id === "tuxi-rebel-ally-1"), true);
+});
+
 /**
  * 验证张辽【突袭】获得陆逊最后手牌时，会触发陆逊【连营】。
  */
 test("tuxi should trigger lianying when stealing the last hand card", () => {
   const state = createInitialGame(42);
-  const actor = state.players[1];
+  const actor = state.players[2];
   const target = state.players[0];
 
   for (const player of state.players) {
@@ -4746,6 +4845,38 @@ test("zhiheng skill should discard multiple cards and draw same count", () => {
   assert.equal(actor.hand.some((card) => card.id === "zhiheng-multi-2"), false);
   assert.ok(actor.hand.some((card) => card.id === "zhiheng-multi-draw-1"));
   assert.ok(actor.hand.some((card) => card.id === "zhiheng-multi-draw-2"));
+});
+
+test("zhiheng skill should allow discarding equipped card when hand is empty", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.sunquanZhiheng);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [];
+  actor.equipment.weapon = { id: "zhiheng-equip-weapon", kind: "weapon_qinggang_sword", suit: "spade", point: 5 };
+  state.deck = [{ id: "zhiheng-equip-draw-1", kind: "slash", suit: "heart", point: 9 }];
+
+  const zhihengLegal = getLegalActions(state).some(
+    (action) => action.type === "play-card" && action.cardId.startsWith("__virtual_zhiheng__::")
+  );
+  assert.equal(zhihengLegal, true);
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_zhiheng__::zhiheng-equip-weapon",
+    targetId: actor.id
+  });
+
+  assert.equal(actor.equipment.weapon, null);
+  assert.ok(actor.hand.some((card) => card.id === "zhiheng-equip-draw-1"));
 });
 
 /**

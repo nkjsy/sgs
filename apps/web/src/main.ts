@@ -582,7 +582,7 @@ function createGame(seed: number): Game {
   const state = createInitialGame(seed, { nullifyResponsePolicy: "camp-first" });
   const human = state.players[0];
   if (human) {
-    setResponsePreference(state, human.id, "peach", false);
+    setDefaultHumanResponsePreferences(state);
     setBladeFollowUpPromptMode(state, human.id, true);
     setAxeStrikePromptMode(state, human.id, true);
     setFankuiPromptMode(state, human.id, true);
@@ -960,6 +960,18 @@ function renderHumanResponsePanel(pending: PendingHumanResponse): string {
       <div class="response-actions">
         <button data-role="axe-strike-confirm" ${selectedAxeCostCardIds.length === 2 ? "" : "disabled"}>发动贯石斧</button>
         <button data-role="axe-strike-skip">不发动</button>
+      </div>
+    `;
+  }
+
+  if (pending.kind === "ice-sword") {
+    const zones = getPendingIceSwordAvailableZones(game);
+    return `
+      <div class="status">${pending.message}</div>
+      <div class="response-actions">
+        <button data-role="ice-sword-choice" data-zone="hand" ${zones.includes("hand") ? "" : "disabled"}>弃置手牌区</button>
+        <button data-role="ice-sword-choice" data-zone="equipment" ${zones.includes("equipment") ? "" : "disabled"}>弃置装备区</button>
+        <button data-role="response-choice" data-enabled="0">不发动</button>
       </div>
     `;
   }
@@ -1478,8 +1490,8 @@ function render(): void {
   }
 
   if (activeSkillModeId === "zhiheng") {
-    const handIdsForZhiheng = new Set(getHumanPlayer(game).hand.map((card) => card.id));
-    selectedZhihengCardIds = selectedZhihengCardIds.filter((cardId) => handIdsForZhiheng.has(cardId));
+    const validZhihengIds = new Set(getZhihengSelectableCardIds(game));
+    selectedZhihengCardIds = selectedZhihengCardIds.filter((cardId) => validZhihengIds.has(cardId));
   } else if (selectedZhihengCardIds.length > 0) {
     selectedZhihengCardIds = [];
   }
@@ -1947,6 +1959,78 @@ function getEquipmentSummary(player: PlayerState): string {
   return equipmentParts.length > 0 ? equipmentParts.join(" · ") : "无";
 }
 
+function getPlayerEquipmentCards(
+  player: PlayerState,
+  options?: { excludeWeaponKind?: Card["kind"] }
+): Array<{ id: string; kind: Card["kind"]; suit: Card["suit"]; point: number | undefined; slot: "weapon" | "armor" | "horsePlus" | "horseMinus" }> {
+  const cards: Array<{ id: string; kind: Card["kind"]; suit: Card["suit"]; point: number | undefined; slot: "weapon" | "armor" | "horsePlus" | "horseMinus" }> = [];
+
+  if (player.equipment.weapon && player.equipment.weapon.kind !== options?.excludeWeaponKind) {
+    cards.push({
+      id: player.equipment.weapon.id,
+      kind: player.equipment.weapon.kind,
+      suit: player.equipment.weapon.suit,
+      point: player.equipment.weapon.point,
+      slot: "weapon"
+    });
+  }
+
+  if (player.equipment.armor) {
+    cards.push({
+      id: player.equipment.armor.id,
+      kind: player.equipment.armor.kind,
+      suit: player.equipment.armor.suit,
+      point: player.equipment.armor.point,
+      slot: "armor"
+    });
+  }
+
+  if (player.equipment.horsePlus) {
+    cards.push({
+      id: player.equipment.horsePlus.id,
+      kind: player.equipment.horsePlus.kind,
+      suit: player.equipment.horsePlus.suit,
+      point: player.equipment.horsePlus.point,
+      slot: "horsePlus"
+    });
+  }
+
+  if (player.equipment.horseMinus) {
+    cards.push({
+      id: player.equipment.horseMinus.id,
+      kind: player.equipment.horseMinus.kind,
+      suit: player.equipment.horseMinus.suit,
+      point: player.equipment.horseMinus.point,
+      slot: "horseMinus"
+    });
+  }
+
+  return cards;
+}
+
+function getZhihengSelectableCardIds(state: Game): string[] {
+  const human = getHumanPlayer(state);
+  return [...human.hand.map((card) => card.id), ...getPlayerEquipmentCards(human).map((card) => card.id)];
+}
+
+function renderPlayerEquipmentExpanded(player: PlayerState): string {
+  const cards = getPlayerEquipmentCards(player);
+  if (cards.length === 0) {
+    return '<span class="player-equip-chip empty">无</span>';
+  }
+
+  const slotLabel: Record<"weapon" | "armor" | "horsePlus" | "horseMinus", string> = {
+    weapon: "武",
+    armor: "防",
+    horsePlus: "+马",
+    horseMinus: "-马"
+  };
+
+  return cards
+    .map((card) => `<span class="player-equip-chip">${slotLabel[card.slot]}:${getCardKindLabelZh(card.kind)}</span>`)
+    .join("");
+}
+
 function getJudgmentSummary(player: PlayerState): string {
   return player.judgmentZone.delayedTricks.length > 0
     ? player.judgmentZone.delayedTricks.map((card) => getCardKindLabelZh(card.kind)).join("、")
@@ -2074,6 +2158,7 @@ function renderPlayers(
           : `<div class="player-skill-item">暂无技能信息</div>`;
       const tag = player.alive ? "存活" : "阵亡";
       const equipmentSummary = getEquipmentSummary(player);
+      const equipmentExpanded = renderPlayerEquipmentExpanded(player);
       const judgmentSummary = getJudgmentSummary(player);
       const isPrimarySelected = primaryTargetId === player.id;
       const rowClass = [
@@ -2104,7 +2189,8 @@ function renderPlayers(
             <div class="player-right-info">
               <div class="player-name">${player.name}</div>
               <div class="player-core">${player.hp}/${player.maxHp} ♥ · 手牌 ${player.hand.length}</div>
-              <div class="player-zone-line">装:${equipmentSummary}</div>
+              <div class="player-zone-line">装:</div>
+              <div class="player-equip-line">${equipmentExpanded}</div>
               <div class="player-zone-line">判:${judgmentSummary}</div>
             </div>
           </div>
@@ -2348,7 +2434,7 @@ function renderSpearComposePanel(state: Game): string {
 function renderZhihengConfirmPanel(): string {
   const selectedCount = selectedZhihengCardIds.length;
   return `
-    <div class="status">制衡：请选择要弃置的手牌（已选 ${selectedCount} 张）。</div>
+    <div class="status">制衡：请选择要弃置的手牌/装备牌（已选 ${selectedCount} 张）。</div>
     <div class="response-actions">
       <button data-role="zhiheng-confirm" ${selectedCount > 0 ? "" : "disabled"}>确认发动</button>
       <button data-role="zhiheng-cancel">取消制衡</button>
@@ -3073,6 +3159,26 @@ function bindHumanResponseButtons(): void {
       ensureAutoLoop();
     });
   });
+
+  const iceSwordButtons = app.querySelectorAll<HTMLButtonElement>("button[data-role='ice-sword-choice']");
+  iceSwordButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      if (pendingHumanResponse?.kind !== "ice-sword") {
+        return;
+      }
+
+      const zone = button.dataset.zone;
+      if (zone !== "hand" && zone !== "equipment") {
+        return;
+      }
+
+      pendingHumanResponse = null;
+      resolvePendingIceSword(game, true, zone);
+      runAutoUntilHumanChoice();
+      render();
+      ensureAutoLoop();
+    });
+  });
 }
 
 function getPendingFankuiAvailableZones(state: Game): Array<"hand" | "equipment"> {
@@ -3098,9 +3204,32 @@ function getPendingFankuiAvailableZones(state: Game): Array<"hand" | "equipment"
   return result;
 }
 
+function getPendingIceSwordAvailableZones(state: Game): Array<"hand" | "equipment"> {
+  const pending = state.pendingIceSword;
+  if (!pending) {
+    return [];
+  }
+
+  const target = state.players.find((player) => player.id === pending.targetId);
+  if (!target || !target.alive) {
+    return [];
+  }
+
+  const result: Array<"hand" | "equipment"> = [];
+  if (target.hand.length > 0) {
+    result.push("hand");
+  }
+
+  if (target.equipment.weapon || target.equipment.armor || target.equipment.horsePlus || target.equipment.horseMinus) {
+    result.push("equipment");
+  }
+
+  return result;
+}
+
 function getPendingAxeCostOptions(
   state: Game
-): Array<{ id: string; kind: Card["kind"]; suit: Card["suit"]; point: number; zone: "hand" | "equipment" }> {
+): Array<{ id: string; kind: Card["kind"]; suit: Card["suit"]; point: number | undefined; zone: "hand" | "equipment" }> {
   const pending = state.pendingAxeStrike;
   if (!pending) {
     return [];
@@ -3111,7 +3240,7 @@ function getPendingAxeCostOptions(
     return [];
   }
 
-  const options: Array<{ id: string; kind: Card["kind"]; suit: Card["suit"]; point: number; zone: "hand" | "equipment" }> = source.hand.map((card) => ({
+  const options: Array<{ id: string; kind: Card["kind"]; suit: Card["suit"]; point: number | undefined; zone: "hand" | "equipment" }> = source.hand.map((card) => ({
     id: card.id,
     kind: card.kind,
     suit: card.suit,
@@ -3119,42 +3248,15 @@ function getPendingAxeCostOptions(
     zone: "hand"
   }));
 
-  if (source.equipment.weapon && source.equipment.weapon.kind !== "weapon_axe") {
-    options.push({
-      id: source.equipment.weapon.id,
-      kind: source.equipment.weapon.kind,
-      suit: source.equipment.weapon.suit,
-      point: source.equipment.weapon.point,
-      zone: "equipment"
-    });
-  }
-  if (source.equipment.armor) {
-    options.push({
-      id: source.equipment.armor.id,
-      kind: source.equipment.armor.kind,
-      suit: source.equipment.armor.suit,
-      point: source.equipment.armor.point,
-      zone: "equipment"
-    });
-  }
-  if (source.equipment.horsePlus) {
-    options.push({
-      id: source.equipment.horsePlus.id,
-      kind: source.equipment.horsePlus.kind,
-      suit: source.equipment.horsePlus.suit,
-      point: source.equipment.horsePlus.point,
-      zone: "equipment"
-    });
-  }
-  if (source.equipment.horseMinus) {
-    options.push({
-      id: source.equipment.horseMinus.id,
-      kind: source.equipment.horseMinus.kind,
-      suit: source.equipment.horseMinus.suit,
-      point: source.equipment.horseMinus.point,
-      zone: "equipment"
-    });
-  }
+  options.push(
+    ...getPlayerEquipmentCards(source, { excludeWeaponKind: "weapon_axe" }).map((card) => ({
+      id: card.id,
+      kind: card.kind,
+      suit: card.suit,
+      point: card.point,
+      zone: "equipment" as const
+    }))
+  );
 
   return options;
 }
@@ -3162,6 +3264,8 @@ function getPendingAxeCostOptions(
 function renderSelfEquipmentStatus(player: PlayerState, allLegalActions: TurnAction[]): string {
   const inAxeMode = pendingHumanResponse?.kind === "axe-strike";
   const options = getPendingAxeCostOptions(game).filter((option) => option.zone === "equipment");
+  const inZhihengMode = activeSkillModeId === "zhiheng";
+  const zhihengEquipOptions = getPlayerEquipmentCards(player);
 
   const canStartSpearCompose = allLegalActions.some(
     (action) => action.type === "play-card" && action.cardId === "__virtual_spear_slash__"
@@ -3174,7 +3278,21 @@ function renderSelfEquipmentStatus(player: PlayerState, allLegalActions: TurnAct
       : "";
 
   if (!inAxeMode || options.length === 0) {
-    return `<div class="status">装备区：${getEquipmentSummary(player)} ${spearToggle}</div>`;
+    if (!inZhihengMode || zhihengEquipOptions.length === 0) {
+      return `<div class="status">装备区：${getEquipmentSummary(player)} ${spearToggle}</div>`;
+    }
+
+    const zhihengChips = zhihengEquipOptions
+      .map(
+        (option) =>
+          `<button class="zhiheng-equip-card ${selectedZhihengCardIds.includes(option.id) ? "selected" : ""}" data-role="zhiheng-equip-card" data-card-id="${option.id}" title="装备·${getCardKindLabelZh(option.kind)}">
+            ${renderCardCornerMarks(option)}
+            <img class="axe-equip-icon" src="${ASSET_BASE}/cards/${option.kind}.png" alt="${getCardKindLabelZh(option.kind)}" />
+          </button>`
+      )
+      .join("");
+
+    return `<div class="status">装备区：<span class="axe-cost-list">${zhihengChips}</span> ${spearToggle}</div>`;
   }
 
   const chips = options
@@ -3327,6 +3445,29 @@ function bindSpearComposeButtons(): void {
 }
 
 function bindZhihengButtons(): void {
+  const equipmentButtons = app.querySelectorAll<HTMLButtonElement>("button[data-role='zhiheng-equip-card']");
+  equipmentButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      if (activeSkillModeId !== "zhiheng") {
+        return;
+      }
+
+      const cardId = button.dataset.cardId;
+      if (!cardId) {
+        return;
+      }
+
+      if (selectedZhihengCardIds.includes(cardId)) {
+        selectedZhihengCardIds = selectedZhihengCardIds.filter((id) => id !== cardId);
+      } else {
+        selectedZhihengCardIds = [...selectedZhihengCardIds, cardId];
+      }
+
+      render();
+      ensureAutoLoop();
+    });
+  });
+
   const confirmButton = app.querySelector<HTMLButtonElement>("button[data-role='zhiheng-confirm']");
   confirmButton?.addEventListener("click", () => {
     if (activeSkillModeId !== "zhiheng" || selectedZhihengCardIds.length === 0) {
@@ -4243,6 +4384,17 @@ function autoChooseHarvestForAiIfNeeded(): boolean {
 function clearResponseDecisionState(state: Game): void {
   state.responsePreferenceByPlayer = {};
   state.responseDecisionQueueByPlayer = {};
+  setDefaultHumanResponsePreferences(state);
+}
+
+function setDefaultHumanResponsePreferences(state: Game): void {
+  const human = state.players[0];
+  if (!human) {
+    return;
+  }
+
+  setResponsePreference(state, human.id, "peach", false);
+  setResponsePreference(state, human.id, "nullify", false);
 }
 
 function bindPlayerTargetButtons(selectedCardActions: TurnAction[]): void {

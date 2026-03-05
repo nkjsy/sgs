@@ -89,6 +89,7 @@ export function createAiDecisionContext(state: GameState, actorId: string): AiDe
 export function chooseAiAction(context: AiDecisionContext): TurnAction {
   const legal = context.legalActions;
   const perception = buildAiPerception(context);
+  const hostilityPeak = getHostilityPeak(context, perception);
   const slashLikeActionCount = legal.filter(
     (action) => isPlayCardAction(action) && getActionCardKind(context, action) === "slash"
   ).length;
@@ -173,6 +174,13 @@ export function chooseAiAction(context: AiDecisionContext): TurnAction {
     }
   }
 
+  if (hostilityPeak >= 3 && slashActions.length > 0) {
+    const bestSlashAction = pickHighestScoreAction(slashActions, (action) => scoreSlashAction(context, perception, action));
+    if (bestSlashAction) {
+      return bestSlashAction;
+    }
+  }
+
   const supportTrickActions = legal.filter((action): action is PlayCardAction => {
     if (!isPlayCardAction(action)) {
       return false;
@@ -195,7 +203,7 @@ export function chooseAiAction(context: AiDecisionContext): TurnAction {
     const bestSupportAction = pickHighestScoreAction(supportTrickActions, (action) =>
       scoreSupportAction(context, perception, action, slashActions.length > 0)
     );
-    if (bestSupportAction) {
+    if (bestSupportAction && scoreSupportAction(context, perception, bestSupportAction, slashActions.length > 0) > 0) {
       return bestSupportAction;
     }
   }
@@ -303,6 +311,22 @@ export function chooseAiAction(context: AiDecisionContext): TurnAction {
   }
 
   return legal.find((action) => action.type === "end-play-phase") ?? legal[0];
+}
+
+function getHostilityPeak(context: AiDecisionContext, perception: AiPerception): number {
+  let peak = 0;
+  for (const player of context.state.players) {
+    if (!player.alive || player.id === context.actor.id) {
+      continue;
+    }
+
+    const relation = getRelationScore(perception, player.id);
+    if (relation > peak) {
+      peak = relation;
+    }
+  }
+
+  return peak;
 }
 
 /**
@@ -502,6 +526,11 @@ function scoreSupportAction(
   }
 
   if (kind === "rende") {
+    const target = context.state.players.find((player) => player.id === action.targetId);
+    if (!target || !isLikelyAlly(context, perception, target)) {
+      return -1;
+    }
+
     return context.actor.hand.length > context.actor.hp + 1 ? 32 + (context.actor.hand.length - context.actor.hp) * 3 : -1;
   }
 
@@ -519,7 +548,7 @@ function scoreSupportAction(
     const sameCamp = isLikelyAlly(context, perception, target);
     const actorNeedHeal = context.actor.hp < context.actor.maxHp;
     const targetNeedHeal = target.hp < target.maxHp;
-    return sameCamp && actorNeedHeal && targetNeedHeal ? 52 : 8;
+    return sameCamp && actorNeedHeal && targetNeedHeal ? 52 : -1;
   }
 
   if (kind === "qingnang") {
@@ -608,12 +637,34 @@ function shouldAttackPlayer(context: AiDecisionContext, perception: AiPerception
   }
 
   const relation = getRelationScore(perception, target.id);
+  const inferredCamp = perception.inferredCampByPlayerId[target.id] ?? "unknown";
+  const actorCamp = getActorCamp(context.actor.identity);
 
-  if (context.actor.identity === "lord" && target.identity !== "lord") {
+  if (actorCamp !== "renegade" && inferredCamp === actorCamp) {
+    return false;
+  }
+
+  if (context.actor.identity === "lord") {
+    if (inferredCamp === "rebel-side") {
+      return true;
+    }
+
     return relation >= 0;
   }
 
-  if (context.actor.identity !== "renegade") {
+  if (context.actor.identity === "loyalist") {
+    if (inferredCamp === "rebel-side") {
+      return true;
+    }
+
+    return relation > 1;
+  }
+
+  if (context.actor.identity === "rebel") {
+    if (inferredCamp === "lord-side") {
+      return true;
+    }
+
     return relation > 0;
   }
 
@@ -638,6 +689,14 @@ function isLikelyAlly(context: AiDecisionContext, perception: AiPerception, targ
 
   if (target.id === context.actor.id) {
     return true;
+  }
+
+  if (context.actor.identity !== "renegade") {
+    const actorCamp = getActorCamp(context.actor.identity);
+    const inferredCamp = perception.inferredCampByPlayerId[target.id] ?? "unknown";
+    if (inferredCamp !== "unknown") {
+      return inferredCamp === actorCamp;
+    }
   }
 
   return getRelationScore(perception, target.id) <= -1;
@@ -755,7 +814,141 @@ function buildAiPerception(context: AiDecisionContext): AiPerception {
     }
   }
 
+  applyRevealedIdentityCorrections(
+    context,
+    relationByPlayerId,
+    inferredCampByPlayerId,
+    actorCamp,
+    hostilePattern,
+    damagePattern,
+    rescuePattern,
+    healPattern
+  );
+
   return { relationByPlayerId, inferredCampByPlayerId };
+}
+
+function applyRevealedIdentityCorrections(
+  context: AiDecisionContext,
+  relationByPlayerId: Record<string, number>,
+  inferredCampByPlayerId: Record<string, "lord-side" | "rebel-side" | "unknown">,
+  actorCamp: "lord-side" | "rebel-side" | "renegade",
+  hostilePattern: RegExp,
+  damagePattern: RegExp,
+  rescuePattern: RegExp,
+  healPattern: RegExp
+): void {
+  const deadRevealedPlayers = context.state.players.filter((player) => !player.alive);
+  for (const dead of deadRevealedPlayers) {
+    const deadCamp = getActorCamp(dead.identity);
+    inferredCampByPlayerId[dead.id] = deadCamp === "renegade" ? "unknown" : deadCamp;
+
+    if (actorCamp !== "renegade") {
+      relationByPlayerId[dead.id] = deadCamp === actorCamp ? -6 : 6;
+    }
+  }
+
+  for (let index = 0; index < context.state.events.length; index += 1) {
+    const event = context.state.events[index];
+    const recencyWeight = computeEventRecencyWeight(context.state.events.length, index);
+
+    const hostileMatch = event.message.match(hostilePattern);
+    if (hostileMatch) {
+      const source = findPlayerByName(context, hostileMatch[1]);
+      const target = findPlayerByName(context, hostileMatch[2]);
+      if (source && target && !source.id.startsWith("__") && !target.alive) {
+        applyRevealedCampEvidenceFromInteraction(
+          relationByPlayerId,
+          inferredCampByPlayerId,
+          actorCamp,
+          source.id,
+          getActorCamp(target.identity),
+          true,
+          recencyWeight
+        );
+      }
+    }
+
+    const damageMatch = event.message.match(damagePattern);
+    if (damageMatch) {
+      const source = findPlayerByName(context, damageMatch[1]);
+      const target = findPlayerByName(context, damageMatch[2]);
+      if (source && target && !source.id.startsWith("__") && !target.alive) {
+        applyRevealedCampEvidenceFromInteraction(
+          relationByPlayerId,
+          inferredCampByPlayerId,
+          actorCamp,
+          source.id,
+          getActorCamp(target.identity),
+          true,
+          1.2 * recencyWeight
+        );
+      }
+    }
+
+    const rescueMatch = event.message.match(rescuePattern);
+    if (rescueMatch) {
+      const source = findPlayerByName(context, rescueMatch[1]);
+      const target = findPlayerByName(context, rescueMatch[2]);
+      if (source && target && !source.id.startsWith("__") && !target.alive) {
+        applyRevealedCampEvidenceFromInteraction(
+          relationByPlayerId,
+          inferredCampByPlayerId,
+          actorCamp,
+          source.id,
+          getActorCamp(target.identity),
+          false,
+          recencyWeight
+        );
+      }
+    }
+
+    const healMatch = event.message.match(healPattern);
+    if (healMatch) {
+      const source = findPlayerByName(context, healMatch[1]);
+      const target = findPlayerByName(context, healMatch[2]);
+      if (source && target && !source.id.startsWith("__") && !target.alive) {
+        applyRevealedCampEvidenceFromInteraction(
+          relationByPlayerId,
+          inferredCampByPlayerId,
+          actorCamp,
+          source.id,
+          getActorCamp(target.identity),
+          false,
+          0.8 * recencyWeight
+        );
+      }
+    }
+  }
+}
+
+function applyRevealedCampEvidenceFromInteraction(
+  relationByPlayerId: Record<string, number>,
+  inferredCampByPlayerId: Record<string, "lord-side" | "rebel-side" | "unknown">,
+  actorCamp: "lord-side" | "rebel-side" | "renegade",
+  sourceId: string,
+  targetCamp: "lord-side" | "rebel-side" | "renegade",
+  hostile: boolean,
+  weight: number
+): void {
+  if (targetCamp === "renegade") {
+    return;
+  }
+
+  const inferredSourceCamp = hostile ? oppositeCamp(targetCamp) : targetCamp;
+  inferredCampByPlayerId[sourceId] = inferredSourceCamp;
+
+  if (actorCamp === "renegade") {
+    return;
+  }
+
+  const sameCamp = inferredSourceCamp === actorCamp;
+  const delta = sameCamp ? -2 * weight : 2 * weight;
+  relationByPlayerId[sourceId] = (relationByPlayerId[sourceId] ?? 0) + delta;
+}
+
+function oppositeCamp(camp: "lord-side" | "rebel-side"): "lord-side" | "rebel-side" {
+  return camp === "lord-side" ? "rebel-side" : "lord-side";
 }
 
 function applyHostileEvidence(
@@ -820,7 +1013,7 @@ function findPlayerByName(context: AiDecisionContext, name: string): AiDecisionC
 
 function createObservedPlayer(player: PlayerState, actorId: string): PlayerState {
   const isActor = player.id === actorId;
-  const identity = isActor || player.identity === "lord" ? player.identity : "renegade";
+  const identity = isActor || player.identity === "lord" || !player.alive ? player.identity : "renegade";
 
   return {
     id: player.id,

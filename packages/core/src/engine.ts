@@ -628,6 +628,22 @@ export function getLegalActions(state: GameState): TurnAction[] {
     }
   }
 
+  if (
+    hasSkill(state, actor.id, STANDARD_SKILL_IDS.sunquanZhiheng) &&
+    !state.zhihengUsedInTurnByPlayer[actor.id] &&
+    actor.hand.length === 0
+  ) {
+    const fallbackEquipmentCard = actor.equipment.weapon ?? actor.equipment.armor ?? actor.equipment.horsePlus ?? actor.equipment.horseMinus;
+    if (fallbackEquipmentCard) {
+      actions.push({
+        type: "play-card",
+        actorId: actor.id,
+        cardId: `${VIRTUAL_ZHIHENG_CARD_ID_PREFIX}${fallbackEquipmentCard.id}`,
+        targetId: actor.id
+      });
+    }
+  }
+
   if (hasSkill(state, actor.id, STANDARD_SKILL_IDS.huanggaiKurou)) {
     actions.push({
       type: "play-card",
@@ -1042,7 +1058,11 @@ export function resolvePendingAxeStrike(state: GameState, enabled: boolean, cost
   }
 }
 
-export function resolvePendingIceSword(state: GameState, enabled: boolean): void {
+export function resolvePendingIceSword(
+  state: GameState,
+  enabled: boolean,
+  preferredZone: "hand" | "equipment" | null = null
+): void {
   const pending = state.pendingIceSword;
   if (!pending) {
     return;
@@ -1060,8 +1080,8 @@ export function resolvePendingIceSword(state: GameState, enabled: boolean): void
   }
 
   if (enabled && source.equipment.weapon?.kind === "weapon_ice_sword" && hasCardForIceSword(target)) {
-    const first = discardOneCardForIceSword(state, target);
-    const second = discardOneCardForIceSword(state, target);
+    const first = discardOneCardForIceSword(state, target, preferredZone ?? undefined);
+    const second = discardOneCardForIceSword(state, target, preferredZone ?? undefined);
     if (first || second) {
       pushEvent(state, "equip", `${source.name} 发动寒冰剑，防止了本次伤害并弃置了 ${target.name} 的牌`);
       if (pending.shouldDiscardSlash) {
@@ -1303,7 +1323,7 @@ function resolveDrawPhase(state: GameState, player: PlayerState): void {
           .map((targetId) => validTargets.find((candidate) => candidate.id === targetId))
           .filter((target): target is PlayerState => Boolean(target))
       : player.isAi
-        ? validTargets.slice(0, 2)
+        ? chooseAiTuxiTargets(player, validTargets)
         : [])
       .slice(0, 2);
     for (const target of targets) {
@@ -1328,6 +1348,22 @@ function resolveDrawPhase(state: GameState, player: PlayerState): void {
   }
 
   drawCards(state, player.id, drawCount);
+}
+
+function chooseAiTuxiTargets(player: PlayerState, validTargets: PlayerState[]): PlayerState[] {
+  const hostileTargets = validTargets.filter((candidate) => !isSameCamp(player.identity, candidate.identity));
+  if (hostileTargets.length === 0) {
+    return [];
+  }
+
+  return [...hostileTargets]
+    .sort((left, right) => {
+      if (right.hand.length !== left.hand.length) {
+        return right.hand.length - left.hand.length;
+      }
+      return left.hp - right.hp;
+    })
+    .slice(0, 2);
 }
 
 function tryTriggerGuanxing(state: GameState, player: PlayerState): void {
@@ -2341,47 +2377,67 @@ function hasCardForIceSword(target: PlayerState): boolean {
   );
 }
 
-function discardOneCardForIceSword(state: GameState, target: PlayerState): Card | undefined {
-  if (target.hand.length > 0) {
+function discardOneCardForIceSword(
+  state: GameState,
+  target: PlayerState,
+  preferredZone?: "hand" | "equipment"
+): Card | undefined {
+  const discardFromHand = (): Card | undefined => {
+    if (target.hand.length <= 0) {
+      return undefined;
+    }
+
     const card = target.hand.shift() as Card;
     state.discard.push(card);
     tryTriggerLianyingAfterHandLoss(state, target);
     return card;
+  };
+
+  const discardFromEquipment = (): Card | undefined => {
+    if (target.equipment.weapon) {
+      const card = target.equipment.weapon;
+      target.equipment.weapon = null;
+      tryTriggerXiaojiAfterEquipmentLoss(state, target, 1);
+      state.discard.push(card);
+      return card;
+    }
+
+    if (target.equipment.armor) {
+      const card = target.equipment.armor;
+      target.equipment.armor = null;
+      tryTriggerXiaojiAfterEquipmentLoss(state, target, 1);
+      state.discard.push(card);
+      return card;
+    }
+
+    if (target.equipment.horsePlus) {
+      const card = target.equipment.horsePlus;
+      target.equipment.horsePlus = null;
+      tryTriggerXiaojiAfterEquipmentLoss(state, target, 1);
+      state.discard.push(card);
+      return card;
+    }
+
+    if (target.equipment.horseMinus) {
+      const card = target.equipment.horseMinus;
+      target.equipment.horseMinus = null;
+      tryTriggerXiaojiAfterEquipmentLoss(state, target, 1);
+      state.discard.push(card);
+      return card;
+    }
+
+    return undefined;
+  };
+
+  if (preferredZone === "equipment") {
+    return discardFromEquipment() ?? discardFromHand();
   }
 
-  if (target.equipment.weapon) {
-    const card = target.equipment.weapon;
-    target.equipment.weapon = null;
-    tryTriggerXiaojiAfterEquipmentLoss(state, target, 1);
-    state.discard.push(card);
-    return card;
+  if (preferredZone === "hand") {
+    return discardFromHand() ?? discardFromEquipment();
   }
 
-  if (target.equipment.armor) {
-    const card = target.equipment.armor;
-    target.equipment.armor = null;
-    tryTriggerXiaojiAfterEquipmentLoss(state, target, 1);
-    state.discard.push(card);
-    return card;
-  }
-
-  if (target.equipment.horsePlus) {
-    const card = target.equipment.horsePlus;
-    target.equipment.horsePlus = null;
-    tryTriggerXiaojiAfterEquipmentLoss(state, target, 1);
-    state.discard.push(card);
-    return card;
-  }
-
-  if (target.equipment.horseMinus) {
-    const card = target.equipment.horseMinus;
-    target.equipment.horseMinus = null;
-    tryTriggerXiaojiAfterEquipmentLoss(state, target, 1);
-    state.discard.push(card);
-    return card;
-  }
-
-  return undefined;
+  return discardFromHand() ?? discardFromEquipment();
 }
 
 function getSlashTargetsForResolution(
@@ -3664,7 +3720,7 @@ function applyZhihengAction(state: GameState, actor: PlayerState, action: PlayCa
 
   const discardedCards: Card[] = [];
   for (const sourceCardId of sourceCardIds) {
-    const removed = removeCardFromHand(state, actor, sourceCardId);
+    const removed = removeOwnedCardById(state, actor, sourceCardId);
     if (removed) {
       discardedCards.push(removed);
     }
@@ -4426,6 +4482,43 @@ function removeCardFromHand(state: GameState, player: PlayerState, cardId: strin
   const [card] = player.hand.splice(index, 1);
   tryTriggerLianyingAfterHandLoss(state, player);
   return card;
+}
+
+function removeOwnedCardById(state: GameState, player: PlayerState, cardId: string): Card | undefined {
+  const handCard = removeCardFromHand(state, player, cardId);
+  if (handCard) {
+    return handCard;
+  }
+
+  if (player.equipment.weapon?.id === cardId) {
+    const card = player.equipment.weapon;
+    player.equipment.weapon = null;
+    tryTriggerXiaojiAfterEquipmentLoss(state, player, 1);
+    return card;
+  }
+
+  if (player.equipment.armor?.id === cardId) {
+    const card = player.equipment.armor;
+    player.equipment.armor = null;
+    tryTriggerXiaojiAfterEquipmentLoss(state, player, 1);
+    return card;
+  }
+
+  if (player.equipment.horsePlus?.id === cardId) {
+    const card = player.equipment.horsePlus;
+    player.equipment.horsePlus = null;
+    tryTriggerXiaojiAfterEquipmentLoss(state, player, 1);
+    return card;
+  }
+
+  if (player.equipment.horseMinus?.id === cardId) {
+    const card = player.equipment.horseMinus;
+    player.equipment.horseMinus = null;
+    tryTriggerXiaojiAfterEquipmentLoss(state, player, 1);
+    return card;
+  }
+
+  return undefined;
 }
 
 function consumeFirstCardByKind(state: GameState, player: PlayerState, kind: Card["kind"]): Card | undefined {
