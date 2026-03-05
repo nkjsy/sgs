@@ -8,10 +8,14 @@ import {
   getLegalActions,
   queueResponseDecision,
   resolvePendingAxeStrike,
+  resolvePendingFankui,
+  resolvePendingCollateral,
   resolvePendingDuelResponse,
   resolvePendingIceSword,
   setAxeStrikePromptMode,
+  setCollateralPromptMode,
   setDuelPromptMode,
+  setFankuiPromptMode,
   setIceSwordPromptMode,
   setLuoyiChoice,
   setPeachRescuePromptMode,
@@ -1392,6 +1396,45 @@ test("collateral should transfer weapon when holder cannot slash", () => {
 });
 
 /**
+ * 验证借刀杀人在手动模式下，持刀者可选择不出杀并转移武器。
+ */
+test("collateral manual prompt should allow holder to decline slash", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const weaponHolder = state.players[1];
+  const slashTarget = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  weaponHolder.isAi = false;
+  setCollateralPromptMode(state, weaponHolder.id, true);
+  actor.hand = [{ id: "collateral-manual-1", kind: "collateral" }];
+  weaponHolder.equipment.weapon = { id: "wh-weapon-manual-1", kind: "weapon_blade" };
+  weaponHolder.hand = [{ id: "holder-slash-manual-1", kind: "slash" }];
+
+  const hpBefore = slashTarget.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "collateral-manual-1",
+    targetId: weaponHolder.id,
+    secondaryTargetId: slashTarget.id
+  });
+
+  assert.ok(state.pendingCollateral);
+  resolvePendingCollateral(state, false);
+
+  assert.equal(state.pendingCollateral, null);
+  assert.equal(slashTarget.hp, hpBefore);
+  assert.ok(actor.hand.some((card) => card.id === "wh-weapon-manual-1"));
+  assert.ok(weaponHolder.hand.some((card) => card.id === "holder-slash-manual-1"));
+});
+
+/**
  * 验证借刀指定越界次目标时动作无效，手牌不应被消耗。
  */
 test("collateral should remain in hand when secondary target is out of holder range", () => {
@@ -2664,6 +2707,43 @@ test("fankui skill should gain one card from damage source", () => {
 
   assert.ok(target.hand.some((card) => card.id === "fankui-src-card-1"));
   assert.equal(source.hand.some((card) => card.id === "fankui-src-card-1"), false);
+});
+
+/**
+ * 验证反馈手动模式下可选择从装备区获得来源牌。
+ */
+test("fankui manual prompt should allow choosing equipment zone", () => {
+  const state = createInitialGame(42);
+  const source = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, target.id, STANDARD_SKILL_IDS.simayiFankui);
+  target.isAi = false;
+  setFankuiPromptMode(state, target.id, true);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.hand = [{ id: "slash-fankui-manual-1", kind: "slash", suit: "spade", point: 10 }];
+  source.equipment.armor = { id: "fankui-src-armor-1", kind: "armor_renwang_shield", suit: "club", point: 2 };
+  target.hand = [];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "slash-fankui-manual-1",
+    targetId: target.id
+  });
+
+  assert.ok(state.pendingFankui);
+  resolvePendingFankui(state, true, "equipment");
+
+  assert.equal(state.pendingFankui, null);
+  assert.ok(target.hand.some((card) => card.id === "fankui-src-armor-1"));
+  assert.equal(source.equipment.armor, null);
 });
 
 /**
@@ -4628,6 +4708,44 @@ test("zhiheng skill should discard one and draw one once per turn", () => {
     (action) => action.type === "play-card" && action.cardId.startsWith("__virtual_zhiheng__::")
   );
   assert.equal(secondZhihengStillLegal, false);
+});
+
+/**
+ * 验证制衡可一次弃置多张手牌并摸等量牌。
+ */
+test("zhiheng skill should discard multiple cards and draw same count", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.sunquanZhiheng);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [
+    { id: "zhiheng-multi-1", kind: "dodge", suit: "heart", point: 6 },
+    { id: "zhiheng-multi-2", kind: "slash", suit: "spade", point: 9 },
+    { id: "zhiheng-multi-3", kind: "peach", suit: "diamond", point: 8 }
+  ];
+  state.deck = [
+    { id: "zhiheng-multi-draw-1", kind: "duel", suit: "club", point: 3 },
+    { id: "zhiheng-multi-draw-2", kind: "dismantle", suit: "spade", point: 11 }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_zhiheng__::zhiheng-multi-1,zhiheng-multi-2",
+    targetId: actor.id
+  });
+
+  assert.equal(actor.hand.some((card) => card.id === "zhiheng-multi-1"), false);
+  assert.equal(actor.hand.some((card) => card.id === "zhiheng-multi-2"), false);
+  assert.ok(actor.hand.some((card) => card.id === "zhiheng-multi-draw-1"));
+  assert.ok(actor.hand.some((card) => card.id === "zhiheng-multi-draw-2"));
 });
 
 /**

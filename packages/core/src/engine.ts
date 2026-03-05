@@ -154,6 +154,8 @@ export function createInitialGame(seed: number, options: CreateInitialGameOption
     responsePreferenceByPlayer: {},
     responseDecisionQueueByPlayer: {},
     duelPromptModeByPlayer: {},
+    fankuiPromptModeByPlayer: {},
+    collateralPromptModeByPlayer: {},
     peachRescuePromptModeByPlayer: {},
     preparedEightDiagramResultByPlayer: {},
     manualDiscardByPlayer: {},
@@ -168,6 +170,8 @@ export function createInitialGame(seed: number, options: CreateInitialGameOption
     pendingAxeStrike: null,
     bladeFollowUpPromptModeByPlayer: {},
     pendingBladeFollowUp: null,
+    pendingFankui: null,
+    pendingCollateral: null,
     pendingDuel: null,
     winner: null,
     seed,
@@ -193,7 +197,14 @@ export function stepPhase(state: GameState): void {
     return;
   }
 
-  if (state.pendingIceSword || state.pendingAxeStrike || state.pendingBladeFollowUp || state.pendingDuel) {
+  if (
+    state.pendingIceSword ||
+    state.pendingAxeStrike ||
+    state.pendingBladeFollowUp ||
+    state.pendingFankui ||
+    state.pendingCollateral ||
+    state.pendingDuel
+  ) {
     return;
   }
 
@@ -791,6 +802,14 @@ export function setDuelPromptMode(state: GameState, playerId: string, enabled: b
   state.duelPromptModeByPlayer[playerId] = enabled;
 }
 
+export function setFankuiPromptMode(state: GameState, playerId: string, enabled: boolean): void {
+  state.fankuiPromptModeByPlayer[playerId] = enabled;
+}
+
+export function setCollateralPromptMode(state: GameState, playerId: string, enabled: boolean): void {
+  state.collateralPromptModeByPlayer[playerId] = enabled;
+}
+
 export function setPeachRescuePromptMode(state: GameState, playerId: string, enabled: boolean): void {
   state.peachRescuePromptModeByPlayer[playerId] = enabled;
 }
@@ -1060,6 +1079,73 @@ export function resolvePendingIceSword(state: GameState, enabled: boolean): void
   if (pending.shouldDiscardSlash) {
     discardCardUnlessObtainedByJianxiong(state, pending.slashCard);
   }
+}
+
+export function resolvePendingFankui(
+  state: GameState,
+  enabled: boolean,
+  zone: "hand" | "equipment" | null = null
+): void {
+  const pending = state.pendingFankui;
+  if (!pending) {
+    return;
+  }
+
+  const source = getPlayerById(state, pending.sourceId);
+  const target = getPlayerById(state, pending.targetId);
+  if (!source || !target || !source.alive || !target.alive || pending.remainingCount <= 0) {
+    state.pendingFankui = null;
+    return;
+  }
+
+  const effectiveZone = zone === "hand" || zone === "equipment" ? zone : null;
+  if (!enabled) {
+    pushEvent(state, "skill", `${target.name} 选择不发动反馈`);
+  } else {
+    const taken =
+      effectiveZone === "hand"
+        ? takeOneCardForFankuiFromHand(state, source)
+        : effectiveZone === "equipment"
+          ? takeOneCardForFankuiFromEquipment(state, source)
+          : takeOneCardForFankui(state, source);
+
+    if (taken) {
+      target.hand.push(taken);
+      pushEvent(state, "skill", `${target.name} 发动反馈，获得了 ${source.name} 的 ${taken.id}`);
+    }
+  }
+
+  const remaining = pending.remainingCount - 1;
+  if (remaining <= 0 || !hasAnyCardForFankui(source)) {
+    state.pendingFankui = null;
+    return;
+  }
+
+  pending.remainingCount = remaining;
+}
+
+export function resolvePendingCollateral(state: GameState, enabled: boolean): void {
+  const pending = state.pendingCollateral;
+  if (!pending) {
+    return;
+  }
+
+  state.pendingCollateral = null;
+  const source = getPlayerById(state, pending.sourceId);
+  const holder = getPlayerById(state, pending.holderId);
+  const target = getPlayerById(state, pending.targetId);
+  if (!source || !holder || !target || !source.alive || !holder.alive || !target.alive || !holder.equipment.weapon) {
+    state.discard.push(pending.trickCard);
+    return;
+  }
+
+  if (enabled) {
+    pushEvent(state, "response", `${holder.name} 选择对 ${target.name} 出杀`);
+  } else {
+    pushEvent(state, "response", `${holder.name} 选择不出杀`);
+  }
+
+  resolveCollateralOutcome(state, source, holder, target, pending.trickCard, enabled);
 }
 
 export function canRespondWithSlash(state: GameState, playerId: string): boolean {
@@ -1596,20 +1682,18 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
       return;
     }
 
-    const slash = consumeSlashLikeCard(state, weaponHolder, "借刀杀人");
-    if (slash) {
-      pushEvent(state, "response", `${weaponHolder.name} 被迫对 ${slashTarget.name} 使用杀`);
-      resolveSlashOnTarget(state, weaponHolder, slashTarget, slash, "借刀杀人的杀", false);
-      discardCardUnlessObtainedByJianxiong(state, slash);
-    } else if (weaponHolder.equipment.weapon) {
-      const takenWeapon = weaponHolder.equipment.weapon;
-      weaponHolder.equipment.weapon = null;
-      actor.hand.push(takenWeapon);
-      tryTriggerXiaojiAfterEquipmentLoss(state, weaponHolder, 1);
-      pushEvent(state, "trick", `${weaponHolder.name} 未打出杀，武器被 ${actor.name} 获得`);
+    const collateralPromptEnabled = state.collateralPromptModeByPlayer[weaponHolder.id] === true && !weaponHolder.isAi;
+    if (collateralPromptEnabled) {
+      state.pendingCollateral = {
+        sourceId: actor.id,
+        holderId: weaponHolder.id,
+        targetId: slashTarget.id,
+        trickCard: card
+      };
+      return;
     }
 
-    state.discard.push(card);
+    resolveCollateralOutcome(state, actor, weaponHolder, slashTarget, card, true);
     return;
   }
 
@@ -3337,6 +3421,15 @@ function tryTriggerFankui(state: GameState, sourceId: string, targetId: string, 
     return;
   }
 
+  if (state.fankuiPromptModeByPlayer[target.id] === true && !target.isAi && hasAnyCardForFankui(source)) {
+    state.pendingFankui = {
+      sourceId: source.id,
+      targetId: target.id,
+      remainingCount: Math.max(1, damageAmount)
+    };
+    return;
+  }
+
   for (let index = 0; index < damageAmount; index += 1) {
     const taken = takeOneCardForFankui(state, source);
     if (!taken) {
@@ -3349,12 +3442,25 @@ function tryTriggerFankui(state: GameState, sourceId: string, targetId: string, 
 }
 
 function takeOneCardForFankui(state: GameState, source: PlayerState): Card | undefined {
+  const fromHand = takeOneCardForFankuiFromHand(state, source);
+  if (fromHand) {
+    return fromHand;
+  }
+
+  return takeOneCardForFankuiFromEquipment(state, source);
+}
+
+function takeOneCardForFankuiFromHand(state: GameState, source: PlayerState): Card | undefined {
   if (source.hand.length > 0) {
     const card = source.hand.shift() as Card;
     tryTriggerLianyingAfterHandLoss(state, source);
     return card;
   }
 
+  return undefined;
+}
+
+function takeOneCardForFankuiFromEquipment(state: GameState, source: PlayerState): Card | undefined {
   if (source.equipment.weapon) {
     const card = source.equipment.weapon;
     source.equipment.weapon = null;
@@ -3384,6 +3490,40 @@ function takeOneCardForFankui(state: GameState, source: PlayerState): Card | und
   }
 
   return undefined;
+}
+
+function hasAnyCardForFankui(source: PlayerState): boolean {
+  return (
+    source.hand.length > 0 ||
+    source.equipment.weapon !== null ||
+    source.equipment.armor !== null ||
+    source.equipment.horsePlus !== null ||
+    source.equipment.horseMinus !== null
+  );
+}
+
+function resolveCollateralOutcome(
+  state: GameState,
+  sourceActor: PlayerState,
+  weaponHolder: PlayerState,
+  slashTarget: PlayerState,
+  collateralCard: Card,
+  shouldUseSlash: boolean
+): void {
+  const slash = shouldUseSlash ? consumeSlashLikeCard(state, weaponHolder, "借刀杀人") : null;
+  if (slash) {
+    pushEvent(state, "response", `${weaponHolder.name} 对 ${slashTarget.name} 使用杀`);
+    resolveSlashOnTarget(state, weaponHolder, slashTarget, slash, "借刀杀人的杀", false);
+    discardCardUnlessObtainedByJianxiong(state, slash);
+  } else if (weaponHolder.equipment.weapon) {
+    const takenWeapon = weaponHolder.equipment.weapon;
+    weaponHolder.equipment.weapon = null;
+    sourceActor.hand.push(takenWeapon);
+    tryTriggerXiaojiAfterEquipmentLoss(state, weaponHolder, 1);
+    pushEvent(state, "trick", `${weaponHolder.name} 未打出杀，武器被 ${sourceActor.name} 获得`);
+  }
+
+  state.discard.push(collateralCard);
 }
 
 function findGuicaiResponder(state: GameState, judgedPlayer: PlayerState): PlayerState | undefined {
@@ -3516,17 +3656,29 @@ function applyZhihengAction(state: GameState, actor: PlayerState, action: PlayCa
     return;
   }
 
-  const sourceCardId = action.cardId.slice(VIRTUAL_ZHIHENG_CARD_ID_PREFIX.length);
-  const discarded = removeCardFromHand(state, actor, sourceCardId);
-  if (!discarded) {
+  const encoded = action.cardId.slice(VIRTUAL_ZHIHENG_CARD_ID_PREFIX.length);
+  const sourceCardIds = Array.from(new Set(encoded.split(",").map((value) => value.trim()).filter(Boolean)));
+  if (sourceCardIds.length === 0) {
     return;
   }
 
-  state.discard.push(discarded);
+  const discardedCards: Card[] = [];
+  for (const sourceCardId of sourceCardIds) {
+    const removed = removeCardFromHand(state, actor, sourceCardId);
+    if (removed) {
+      discardedCards.push(removed);
+    }
+  }
+
+  if (discardedCards.length === 0) {
+    return;
+  }
+
+  state.discard.push(...discardedCards);
   state.zhihengUsedInTurnByPlayer[actor.id] = true;
   tryTriggerLianyingAfterHandLoss(state, actor);
-  drawCards(state, actor.id, 1);
-  pushEvent(state, "skill", `${actor.name} 发动制衡，弃置 1 张牌并摸 1 张牌`);
+  drawCards(state, actor.id, discardedCards.length);
+  pushEvent(state, "skill", `${actor.name} 发动制衡，弃置 ${discardedCards.length} 张牌并摸 ${discardedCards.length} 张牌`);
 }
 
 function applyJieyinAction(state: GameState, actor: PlayerState, action: PlayCardAction): void {
@@ -4194,6 +4346,8 @@ function advanceTurn(state: GameState): void {
   state.pendingIceSword = null;
   state.pendingAxeStrike = null;
   state.pendingBladeFollowUp = null;
+  state.pendingFankui = null;
+  state.pendingCollateral = null;
   state.pendingDuel = null;
   state.pendingMassTrick = null;
   state.turnCount += 1;

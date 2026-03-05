@@ -603,7 +603,16 @@ function shouldAttackPlayer(context: AiDecisionContext, perception: AiPerception
     return false;
   }
 
+  if (target.identity === "lord" && (context.actor.identity === "lord" || context.actor.identity === "loyalist")) {
+    return false;
+  }
+
   const relation = getRelationScore(perception, target.id);
+
+  if (context.actor.identity === "lord" && target.identity !== "lord") {
+    return relation >= 0;
+  }
+
   if (context.actor.identity !== "renegade") {
     return relation > 0;
   }

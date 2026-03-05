@@ -33,7 +33,9 @@ export interface SkillSystemState {
 export type ResponseKind =
   | "dodge"
   | "slash"
+  | "collateral"
   | "nullify"
+  | "fankui"
   | "ice-sword"
   | "axe-strike"
   | "blade-follow-up"
@@ -45,7 +47,9 @@ export type ResponseKind =
 export interface ResponsePreference {
   dodge?: boolean;
   slash?: boolean;
+  collateral?: boolean;
   nullify?: boolean;
+  fankui?: boolean;
   "ice-sword"?: boolean;
   "axe-strike"?: boolean;
   "blade-follow-up"?: boolean;
@@ -281,6 +285,10 @@ export interface GameState {
   responseDecisionQueueByPlayer: Record<string, Partial<Record<ResponseKind, boolean[]>>>;
   /** 各角色是否启用决斗逐次手动响应模式。 */
   duelPromptModeByPlayer: Record<string, boolean>;
+  /** 各角色是否启用反馈手动确认模式。 */
+  fankuiPromptModeByPlayer: Record<string, boolean>;
+  /** 各角色是否启用借刀杀人“是否出杀”手动确认模式。 */
+  collateralPromptModeByPlayer: Record<string, boolean>;
   /** 各角色是否启用桃救援手动确认模式。 */
   peachRescuePromptModeByPlayer: Record<string, boolean>;
   /** 各角色预结算的八卦阵判定结果队列（按响应次序消费）。 */
@@ -320,6 +328,19 @@ export interface GameState {
   bladeFollowUpPromptModeByPlayer: Record<string, boolean>;
   /** 青龙偃月刀追击待确认状态。 */
   pendingBladeFollowUp: { sourceId: string; targetId: string } | null;
+  /** 反馈待确认状态。 */
+  pendingFankui: {
+    sourceId: string;
+    targetId: string;
+    remainingCount: number;
+  } | null;
+  /** 借刀杀人“是否出杀”待确认状态。 */
+  pendingCollateral: {
+    sourceId: string;
+    holderId: string;
+    targetId: string;
+    trickCard: Card;
+  } | null;
   /** 决斗响应待确认状态（用于逐次询问人类是否打出杀）。 */
   pendingDuel: {
     sourceId: string;

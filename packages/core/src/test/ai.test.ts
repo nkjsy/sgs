@@ -183,3 +183,49 @@ test("ai should weight recent hostility higher than old hostility", () => {
   assert.equal(action.cardId, "ai-slash-recent-1");
   assert.equal(action.targetId, recentHostile.id);
 });
+
+/**
+ * 验证主忠方 AI 不会主动把主公当作攻击目标。
+ */
+test("loyalist ai should not attack the lord on opening action", () => {
+  const state = createInitialGame(42);
+  const lord = state.players[0];
+  const loyalist = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  loyalist.identity = "loyalist";
+  lord.identity = "lord";
+  state.currentPlayerId = loyalist.id;
+  state.phase = "play";
+  loyalist.hand = [{ id: "ai-loyalist-slash-1", kind: "slash", suit: "spade", point: 7 }];
+
+  const action = chooseAiAction(createAiDecisionContext(state, loyalist.id));
+
+  assert.equal(action.type, "end-play-phase");
+});
+
+/**
+ * 验证主公在无行为证据时可主动攻击未知身份目标（可能误伤忠臣）。
+ */
+test("lord ai may attack unknown target without evidence", () => {
+  const state = createInitialGame(42);
+  const lord = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  lord.identity = "lord";
+  state.currentPlayerId = lord.id;
+  state.phase = "play";
+  lord.hand = [{ id: "ai-lord-slash-unknown-1", kind: "slash", suit: "spade", point: 8 }];
+
+  const action = chooseAiAction(createAiDecisionContext(state, lord.id));
+
+  assert.equal(action.type, "play-card");
+  assert.equal(action.cardId, "ai-lord-slash-unknown-1");
+  assert.notEqual(action.targetId, lord.id);
+});
