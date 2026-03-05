@@ -3,3 +3,5 @@ dist/
 coverage/
 *.log
 assets/
+!apps/web/public/assets/
+!apps/web/public/assets/**
