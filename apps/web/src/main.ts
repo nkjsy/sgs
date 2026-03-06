@@ -18,6 +18,7 @@ import {
   getLegalActions,
   prepareEightDiagramJudge,
   queueResponseDecision,
+  queueResponseCardChoice,
   resolvePendingDuelResponse,
   resolvePendingBladeFollowUp,
   resolvePendingAxeStrike,
@@ -1012,6 +1013,31 @@ function renderHumanResponsePanel(pending: PendingHumanResponse): string {
     `;
   }
 
+  if (pending.kind === "dodge") {
+    const qingguoOptions = getPendingQingguoDodgeOptions(game);
+    if (qingguoOptions.length > 0) {
+      const cards = qingguoOptions
+        .map(
+          (card) =>
+            `<button class="hand-card" data-role="qingguo-dodge-card" data-card-id="${card.id}" title="倾国·${getCardKindLabelZh(card.kind)}">
+              ${renderCardCornerMarks(card)}
+              <img class="card-icon" src="${ASSET_BASE}/cards/${card.kind}.png" alt="${getCardKindLabelZh(card.kind)}" />
+            </button>`
+        )
+        .join("");
+
+      return `
+        <div class="status">${pending.message}</div>
+        <div class="status">你可选择是否发动【倾国】，并指定一张黑色手牌当【闪】打出：</div>
+        <div class="hand-list">${cards}</div>
+        <div class="response-actions">
+          <button data-role="response-choice" data-enabled="1" ${canRespondWithNormalDodge(game, getHumanPlayer(game).id) ? "" : "disabled"}>使用普通闪</button>
+          <button data-role="response-choice" data-enabled="0">不响应</button>
+        </div>
+      `;
+    }
+  }
+
   const allowRespond = pending.allowRespond !== false;
 
   return `
@@ -1513,9 +1539,11 @@ function render(): void {
 
   const legalActions = filterActionsBySkillMode(allLegalActions, activeSkillModeId);
 
-  const humanHand = getHumanPlayer(game).hand;
+  const humanPlayerForSelection = getHumanPlayer(game);
+  const humanHand = humanPlayerForSelection.hand;
+  const humanEquipmentCardIds = new Set(getPlayerEquipmentCards(humanPlayerForSelection).map((card) => card.id));
   const handCardIds = new Set(humanHand.map((card) => card.id));
-  if (selectedCardId && !handCardIds.has(selectedCardId)) {
+  if (selectedCardId && !handCardIds.has(selectedCardId) && !humanEquipmentCardIds.has(selectedCardId)) {
     selectedCardId = null;
     pendingPrimaryTargetId = null;
     pendingSecondaryTargetId = null;
@@ -1680,6 +1708,7 @@ function render(): void {
   bindTuxiChoiceButtons();
   bindSkillButtons(allLegalActions);
   bindHandButtons(legalActions);
+  bindSkillEquipmentButtons();
   bindZhihengButtons();
   bindPlayerTargetButtons(selectedCardActions);
   bindZoneChoiceButtons();
@@ -3140,6 +3169,44 @@ function bindHumanResponseButtons(): void {
     });
   });
 
+  const qingguoButtons = app.querySelectorAll<HTMLButtonElement>("button[data-role='qingguo-dodge-card']");
+  qingguoButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!pendingHumanResponse || pendingHumanResponse.kind !== "dodge") {
+        return;
+      }
+
+      const cardId = button.dataset.cardId;
+      if (!cardId) {
+        return;
+      }
+
+      const current = pendingHumanResponse;
+      const human = getHumanPlayer(game);
+      const queueCount =
+        current.action.type === "play-card" &&
+        inferActionCardKindForResponse(game, current.action) === "slash" &&
+        hasSkillOnPlayer(
+          game,
+          current.action.actorId,
+          STANDARD_SKILL_IDS.lvbuWushuang
+        )
+          ? 2
+          : 1;
+
+      for (let index = 0; index < queueCount; index += 1) {
+        queueResponseDecision(game, human.id, "dodge", true);
+      }
+      queueResponseCardChoice(game, human.id, "dodge", cardId);
+
+      pendingHumanResponse = null;
+      applyAction(game, current.action);
+      runAutoUntilHumanChoice();
+      render();
+      ensureAutoLoop();
+    });
+  });
+
   const fankuiButtons = app.querySelectorAll<HTMLButtonElement>("button[data-role='fankui-choice']");
   fankuiButtons.forEach((button) => {
     button.addEventListener("click", () => {
@@ -3266,6 +3333,14 @@ function renderSelfEquipmentStatus(player: PlayerState, allLegalActions: TurnAct
   const options = getPendingAxeCostOptions(game).filter((option) => option.zone === "equipment");
   const inZhihengMode = activeSkillModeId === "zhiheng";
   const zhihengEquipOptions = getPlayerEquipmentCards(player);
+  const inLijianMode = activeSkillModeId === "lijian";
+  const lijianEquipOptions = inLijianMode
+    ? getPlayerEquipmentCards(player).filter((card) =>
+        allLegalActions.some(
+          (action) => action.type === "play-card" && getActionModeId(action) === "lijian" && getActionSourceCardId(action) === card.id
+        )
+      )
+    : [];
 
   const canStartSpearCompose = allLegalActions.some(
     (action) => action.type === "play-card" && action.cardId === "__virtual_spear_slash__"
@@ -3279,6 +3354,20 @@ function renderSelfEquipmentStatus(player: PlayerState, allLegalActions: TurnAct
 
   if (!inAxeMode || options.length === 0) {
     if (!inZhihengMode || zhihengEquipOptions.length === 0) {
+      if (inLijianMode && lijianEquipOptions.length > 0) {
+        const lijianChips = lijianEquipOptions
+          .map(
+            (option) =>
+              `<button class="zhiheng-equip-card ${selectedCardId === option.id ? "selected" : ""}" data-role="skill-equip-card" data-card-id="${option.id}" title="装备·${getCardKindLabelZh(option.kind)}">
+                ${renderCardCornerMarks(option)}
+                <img class="axe-equip-icon" src="${ASSET_BASE}/cards/${option.kind}.png" alt="${getCardKindLabelZh(option.kind)}" />
+              </button>`
+          )
+          .join("");
+
+        return `<div class="status">装备区：<span class="axe-cost-list">${lijianChips}</span> ${spearToggle}</div>`;
+      }
+
       return `<div class="status">装备区：${getEquipmentSummary(player)} ${spearToggle}</div>`;
     }
 
@@ -3441,6 +3530,31 @@ function bindSpearComposeButtons(): void {
     pendingZoneCardChoiceActions = [];
     render();
     ensureAutoLoop();
+  });
+}
+
+function bindSkillEquipmentButtons(): void {
+  const buttons = app.querySelectorAll<HTMLButtonElement>("button[data-role='skill-equip-card']");
+  buttons.forEach((button) => {
+    button.addEventListener("click", () => {
+      if (activeSkillModeId !== "lijian") {
+        return;
+      }
+
+      const cardId = button.dataset.cardId;
+      if (!cardId) {
+        return;
+      }
+
+      selectedCardId = selectedCardId === cardId ? null : cardId;
+      pendingPrimaryTargetId = null;
+      pendingSecondaryTargetId = null;
+      pendingZoneChoiceActions = [];
+      pendingZoneCardChoiceActions = [];
+      previewTargetIds = [];
+      render();
+      ensureAutoLoop();
+    });
   });
 }
 
@@ -4384,7 +4498,34 @@ function autoChooseHarvestForAiIfNeeded(): boolean {
 function clearResponseDecisionState(state: Game): void {
   state.responsePreferenceByPlayer = {};
   state.responseDecisionQueueByPlayer = {};
+  state.responseCardChoiceQueueByPlayer = {};
   setDefaultHumanResponsePreferences(state);
+}
+
+function getPendingQingguoDodgeOptions(state: Game): Card[] {
+  if (pendingHumanResponse?.kind !== "dodge") {
+    return [];
+  }
+
+  const human = getHumanPlayer(state);
+  if (!human.alive || !hasSkillOnPlayer(state, human.id, STANDARD_SKILL_IDS.zhenjiQingguo)) {
+    return [];
+  }
+
+  return human.hand.filter((card) => isBlackCard(card));
+}
+
+function canRespondWithNormalDodge(state: Game, playerId: string): boolean {
+  const player = state.players.find((candidate) => candidate.id === playerId);
+  if (!player || !player.alive) {
+    return false;
+  }
+
+  return player.hand.some((card) => card.kind === "dodge");
+}
+
+function isBlackCard(card: Card): boolean {
+  return card.suit === "spade" || card.suit === "club";
 }
 
 function setDefaultHumanResponsePreferences(state: Game): void {

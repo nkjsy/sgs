@@ -283,6 +283,8 @@ export interface GameState {
   responsePreferenceByPlayer: Record<string, ResponsePreference>;
   /** 当前回合各角色的响应决策队列。 */
   responseDecisionQueueByPlayer: Record<string, Partial<Record<ResponseKind, boolean[]>>>;
+  /** 当前回合各角色的响应选牌队列（用于指定本次响应消耗的具体手牌）。 */
+  responseCardChoiceQueueByPlayer: Record<string, Partial<Record<ResponseKind, string[]>>>;
   /** 各角色是否启用决斗逐次手动响应模式。 */
   duelPromptModeByPlayer: Record<string, boolean>;
   /** 各角色是否启用反馈手动确认模式。 */

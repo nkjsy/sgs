@@ -153,6 +153,7 @@ export function createInitialGame(seed: number, options: CreateInitialGameOption
     qingnangUsedInTurnByPlayer: {},
     responsePreferenceByPlayer: {},
     responseDecisionQueueByPlayer: {},
+    responseCardChoiceQueueByPlayer: {},
     duelPromptModeByPlayer: {},
     fankuiPromptModeByPlayer: {},
     collateralPromptModeByPlayer: {},
@@ -628,6 +629,31 @@ export function getLegalActions(state: GameState): TurnAction[] {
     }
   }
 
+  if (hasSkill(state, actor.id, STANDARD_SKILL_IDS.diaochanLijian) && !state.lijianUsedInTurnByPlayer[actor.id]) {
+    const maleTargets = getAliveOpponents(state, actor.id).filter((candidate) => candidate.gender === "male");
+    const equipmentCards = [actor.equipment.weapon, actor.equipment.armor, actor.equipment.horsePlus, actor.equipment.horseMinus].filter(
+      (card): card is Card => card !== null
+    );
+
+    for (const equipmentCard of equipmentCards) {
+      for (const firstTarget of maleTargets) {
+        for (const secondTarget of maleTargets) {
+          if (secondTarget.id === firstTarget.id) {
+            continue;
+          }
+
+          actions.push({
+            type: "play-card",
+            actorId: actor.id,
+            cardId: `${VIRTUAL_LIJIAN_CARD_ID_PREFIX}${equipmentCard.id}`,
+            targetId: firstTarget.id,
+            secondaryTargetId: secondTarget.id
+          });
+        }
+      }
+    }
+  }
+
   if (
     hasSkill(state, actor.id, STANDARD_SKILL_IDS.sunquanZhiheng) &&
     !state.zhihengUsedInTurnByPlayer[actor.id] &&
@@ -796,6 +822,7 @@ export function applyAction(state: GameState, action: TurnAction): void {
   } finally {
     state.responsePreferenceByPlayer = {};
     state.responseDecisionQueueByPlayer = {};
+    state.responseCardChoiceQueueByPlayer = {};
     state.preparedEightDiagramResultByPlayer = {};
   }
 }
@@ -812,6 +839,14 @@ export function queueResponseDecision(state: GameState, playerId: string, kind: 
   queue.push(enabled);
   currentQueues[kind] = queue;
   state.responseDecisionQueueByPlayer[playerId] = currentQueues;
+}
+
+export function queueResponseCardChoice(state: GameState, playerId: string, kind: ResponseKind, cardId: string): void {
+  const currentQueues = state.responseCardChoiceQueueByPlayer[playerId] ?? {};
+  const queue = currentQueues[kind] ?? [];
+  queue.push(cardId);
+  currentQueues[kind] = queue;
+  state.responseCardChoiceQueueByPlayer[playerId] = currentQueues;
 }
 
 export function setDuelPromptMode(state: GameState, playerId: string, enabled: boolean): void {
@@ -3318,12 +3353,15 @@ function dealDamage(state: GameState, sourceId: string, targetId: string, amount
   try {
     target.hp -= amount;
     pushEvent(state, "damage", `${source.name} 对 ${target.name} 造成 ${amount} 点伤害`);
+    resolveDyingAndDeath(state, target, source);
+    if (!target.alive) {
+      return;
+    }
+
     tryTriggerYiji(state, target.id, amount);
     tryTriggerJianxiong(state, source, target, damageCard);
     tryTriggerFankui(state, source.id, target.id, amount);
     tryTriggerGanglie(state, source.id, target.id, amount);
-
-    resolveDyingAndDeath(state, target, source);
   } finally {
     leaveDyingResolution(state);
   }
@@ -3347,9 +3385,12 @@ function dealDamageWithoutSource(state: GameState, targetId: string, amount: num
   try {
     target.hp -= amount;
     pushEvent(state, "damage", `${target.name} 受到 ${reason} 造成的 ${amount} 点无来源伤害`);
-    tryTriggerYiji(state, target.id, amount);
-
     resolveDyingAndDeath(state, target);
+    if (!target.alive) {
+      return;
+    }
+
+    tryTriggerYiji(state, target.id, amount);
   } finally {
     leaveDyingResolution(state);
   }
@@ -3864,7 +3905,7 @@ function applyLijianAction(state: GameState, actor: PlayerState, action: PlayCar
   }
 
   const sourceCardId = action.cardId.slice(VIRTUAL_LIJIAN_CARD_ID_PREFIX.length);
-  const costCard = removeCardFromHand(state, actor, sourceCardId);
+  const costCard = removeOwnedCardById(state, actor, sourceCardId);
   if (!costCard) {
     return;
   }
@@ -4850,6 +4891,41 @@ function consumeDodgeLikeCard(state: GameState, player: PlayerState, contextName
     return undefined;
   }
 
+  const selectedCardId = consumeQueuedResponseCardChoice(state, player.id, "dodge");
+  if (selectedCardId) {
+    const selectedIndex = player.hand.findIndex((card) => card.id === selectedCardId);
+    if (selectedIndex >= 0) {
+      const selectedCard = player.hand[selectedIndex] as Card;
+      const canUseAsDodge =
+        selectedCard.kind === "dodge" ||
+        (hasSkill(state, player.id, STANDARD_SKILL_IDS.zhenjiQingguo) && isBlack(selectedCard)) ||
+        (hasSkill(state, player.id, STANDARD_SKILL_IDS.zhaoyunLongdan) && selectedCard.kind === "slash");
+
+      if (canUseAsDodge) {
+        const [consumed] = player.hand.splice(selectedIndex, 1);
+        tryTriggerLianyingAfterHandLoss(state, player);
+
+        if (consumed.kind === "dodge") {
+          return consumed;
+        }
+
+        if (hasSkill(state, player.id, STANDARD_SKILL_IDS.zhenjiQingguo) && isBlack(consumed)) {
+          pushEvent(state, "skill", `${player.name} 在${contextName}中发动倾国，将黑色手牌当闪打出`);
+          return {
+            ...consumed,
+            kind: "dodge"
+          };
+        }
+
+        pushEvent(state, "skill", `${player.name} 在${contextName}中发动龙胆，将杀当闪打出`);
+        return {
+          ...consumed,
+          kind: "dodge"
+        };
+      }
+    }
+  }
+
   const dodge = consumeFirstCardByKind(state, player, "dodge");
   if (dodge) {
     return dodge;
@@ -4898,6 +4974,16 @@ function consumeDodgeLikeCard(state: GameState, player: PlayerState, contextName
     ...slashAsDodge,
     kind: "dodge"
   };
+}
+
+function consumeQueuedResponseCardChoice(state: GameState, playerId: string, kind: ResponseKind): string | undefined {
+  const currentQueues = state.responseCardChoiceQueueByPlayer[playerId];
+  const queue = currentQueues?.[kind];
+  if (!queue || queue.length === 0) {
+    return undefined;
+  }
+
+  return queue.shift();
 }
 
 function getPlayerById(state: GameState, playerId: string): PlayerState | undefined {

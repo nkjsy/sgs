@@ -6,6 +6,7 @@ import {
   createInitialGame,
   getPendingMassTrickAction,
   getLegalActions,
+  queueResponseCardChoice,
   queueResponseDecision,
   resolvePendingAxeStrike,
   resolvePendingFankui,
@@ -2281,6 +2282,37 @@ test("yiji skill should draw 2 cards after taking damage", () => {
 });
 
 /**
+ * 验证郭嘉【遗计】在未被救回而直接阵亡时不会触发。
+ */
+test("yiji should not trigger when owner dies before rescue", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, target.id, STANDARD_SKILL_IDS.guojiaYiji);
+  target.hp = 1;
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "slash-yiji-dead-1", kind: "slash", suit: "spade", point: 8 }];
+  state.deck = [{ id: "yiji-should-not-draw-dead-1", kind: "dodge", suit: "heart", point: 2 }, ...state.deck];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-yiji-dead-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.alive, false);
+  assert.equal(state.events.some((event) => event.type === "skill" && event.message.includes("遗计")), false);
+});
+
+/**
  * 验证 AI 郭嘉【遗计】会将本次摸到的牌分配给身份同阵营角色。
  */
 test("yiji skill should distribute drawn cards to identity-camp ally for ai owner", () => {
@@ -2710,6 +2742,40 @@ test("fankui skill should gain one card from damage source", () => {
 });
 
 /**
+ * 验证司马懿【反馈】在未被救回而直接阵亡时不会触发。
+ */
+test("fankui should not trigger when owner dies before rescue", () => {
+  const state = createInitialGame(42);
+  const source = state.players[2];
+  const target = state.players[3];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, target.id, STANDARD_SKILL_IDS.simayiFankui);
+  target.hp = 1;
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.hand = [
+    { id: "slash-fankui-dead-1", kind: "slash", suit: "spade", point: 10 },
+    { id: "fankui-src-card-dead-1", kind: "dodge", suit: "heart", point: 4 }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "slash-fankui-dead-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.alive, false);
+  assert.equal(source.hand.some((card) => card.id === "fankui-src-card-dead-1"), true);
+  assert.equal(state.events.some((event) => event.type === "skill" && event.message.includes("反馈")), false);
+});
+
+/**
  * 验证反馈手动模式下可选择从装备区获得来源牌。
  */
 test("fankui manual prompt should allow choosing equipment zone", () => {
@@ -2976,6 +3042,42 @@ test("ganglie should still trigger when owner is rescued from dying", () => {
   assert.ok(state.discard.some((card) => card.id === "ganglie-rescue-discard-a"));
   assert.ok(state.discard.some((card) => card.id === "ganglie-rescue-discard-b"));
   assert.ok(state.events.some((event) => event.type === "skill" && event.message.includes("发动刚烈")));
+});
+
+/**
+ * 验证夏侯惇【刚烈】在未被救回而直接阵亡时不会触发。
+ */
+test("ganglie should not trigger when owner dies before rescue", () => {
+  const state = createInitialGame(42);
+  const owner = state.players[1];
+  const source = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, owner.id, STANDARD_SKILL_IDS.xiahoudunGanglie);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  owner.hp = 1;
+  source.hand = [
+    { id: "ganglie-dead-slash-1", kind: "slash", suit: "spade", point: 11 },
+    { id: "ganglie-dead-keep-a", kind: "dodge", suit: "club", point: 2 },
+    { id: "ganglie-dead-keep-b", kind: "duel", suit: "diamond", point: 4 }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "ganglie-dead-slash-1",
+    targetId: owner.id
+  });
+
+  assert.equal(owner.alive, false);
+  assert.equal(source.hand.some((card) => card.id === "ganglie-dead-keep-a"), true);
+  assert.equal(source.hand.some((card) => card.id === "ganglie-dead-keep-b"), true);
+  assert.equal(state.events.some((event) => event.type === "skill" && event.message.includes("发动刚烈")), false);
 });
 
 /**
@@ -5549,6 +5651,39 @@ test("lijian skill should force duel between two male targets", () => {
 });
 
 /**
+ * 验证貂蝉【离间】可弃置装备区的牌作为发动代价。
+ */
+test("lijian skill should allow discarding equipped card as cost", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[1];
+  const firstTarget = state.players[2];
+  const secondTarget = state.players[4];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.diaochanLijian);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.equipment.weapon = { id: "lijian-equip-cost-1", kind: "weapon_blade", suit: "spade", point: 9 };
+  firstTarget.hand = [];
+  secondTarget.hand = [];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_lijian__::lijian-equip-cost-1",
+    targetId: firstTarget.id,
+    secondaryTargetId: secondTarget.id
+  });
+
+  assert.equal(actor.equipment.weapon, null);
+  assert.equal(state.discard.some((card) => card.id === "lijian-equip-cost-1"), true);
+});
+
+/**
  * 验证貂蝉【离间】每回合限一次。
  */
 test("lijian skill should be once per turn", () => {
@@ -5692,6 +5827,36 @@ test("jianxiong skill should gain the card that caused damage", () => {
   assert.equal(target.hand.length, 1);
   assert.equal(target.hand[0]?.id, "jianxiong-source-slash-1");
   assert.equal(source.hand.some((card) => card.id === "jianxiong-source-extra-1"), true);
+});
+
+/**
+ * 验证曹操【奸雄】在未被救回而直接阵亡时不会触发。
+ */
+test("jianxiong should not trigger when owner dies before rescue", () => {
+  const state = createInitialGame(42);
+  const source = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, target.id, STANDARD_SKILL_IDS.caocaoJianxiong);
+  target.hp = 1;
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.hand = [{ id: "jianxiong-dead-source-slash-1", kind: "slash", suit: "spade", point: 7 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "jianxiong-dead-source-slash-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.alive, false);
+  assert.equal(state.events.some((event) => event.type === "skill" && event.message.includes("奸雄")), false);
 });
 
 /**
@@ -5840,6 +6005,43 @@ test("qingguo skill should convert black card to dodge", () => {
 
   assert.equal(target.hp, targetHpBefore);
   assert.ok(state.events.some((event) => event.type === "skill" && event.message.includes("倾国")));
+});
+
+/**
+ * 验证甄姬【倾国】在手动响应时可指定使用哪张黑色手牌当【闪】。
+ */
+test("qingguo response should consume selected black hand card", () => {
+  const state = createInitialGame(42);
+  const source = state.players[2];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, target.id, STANDARD_SKILL_IDS.zhenjiQingguo);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.hand = [{ id: "qingguo-slash-2", kind: "slash", suit: "heart", point: 10 }];
+  target.hand = [
+    { id: "qingguo-normal-dodge-1", kind: "dodge", suit: "heart", point: 7 },
+    { id: "qingguo-selected-black-1", kind: "duel", suit: "club", point: 6 }
+  ];
+
+  queueResponseDecision(state, target.id, "dodge", true);
+  queueResponseCardChoice(state, target.id, "dodge", "qingguo-selected-black-1");
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "qingguo-slash-2",
+    targetId: target.id
+  });
+
+  assert.equal(target.hand.some((card) => card.id === "qingguo-normal-dodge-1"), true);
+  assert.equal(target.hand.some((card) => card.id === "qingguo-selected-black-1"), false);
+  assert.equal(state.discard.some((card) => card.id === "qingguo-selected-black-1"), true);
 });
 
 /**
@@ -6103,31 +6305,27 @@ test("dying flow should emit enter-round-exit events", () => {
 });
 
 /**
- * 验证连锁双死场景下，胜负结算事件应在死亡事件之后写入日志。
+ * 验证致死结算场景下，胜负结算事件应在死亡事件之后写入日志。
  */
-test("game-over should be emitted after chained deaths resolve", () => {
+test("game-over should be emitted after death resolves", () => {
   const state = createInitialGame(42);
   const lord = state.players[0];
-  const ganglieOwner = state.players[2];
+  const attacker = state.players[1];
 
   for (const participant of state.players) {
     participant.hand = [];
   }
 
-  assignSkillToPlayer(state, ganglieOwner.id, STANDARD_SKILL_IDS.xiahoudunGanglie);
-
-  state.currentPlayerId = lord.id;
+  state.currentPlayerId = attacker.id;
   state.phase = "play";
   lord.hp = 1;
-  ganglieOwner.hp = 1;
-  lord.hand = [{ id: "chain-death-duel-1", kind: "duel", suit: "spade", point: 12 }];
-  state.deck = [{ id: "chain-death-ganglie-judge-1", kind: "slash", suit: "spade", point: 9 }, ...state.deck];
+  attacker.hand = [{ id: "death-order-slash-1", kind: "slash", suit: "spade", point: 12 }];
 
   applyAction(state, {
     type: "play-card",
-    actorId: lord.id,
-    cardId: "chain-death-duel-1",
-    targetId: ganglieOwner.id
+    actorId: attacker.id,
+    cardId: "death-order-slash-1",
+    targetId: lord.id
   });
 
   const deathIndexes = state.events
@@ -6136,7 +6334,7 @@ test("game-over should be emitted after chained deaths resolve", () => {
     .map((item) => item.index);
   const gameOverIndex = state.events.findIndex((event) => event.type === "game-over");
 
-  assert.equal(deathIndexes.length, 2);
+  assert.equal(deathIndexes.length, 1);
   assert.ok(gameOverIndex > Math.max(...deathIndexes));
   assert.equal(state.winner, "rebel-side");
 });
