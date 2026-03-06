@@ -66,6 +66,87 @@ test("renegade ai should pressure stronger camp first", () => {
   assert.equal(action.targetId, rebel.id);
 });
 
+test("renegade ai should avoid attacking low-hp lord before final duel", () => {
+  const state = createInitialGame(42);
+  const lord = state.players[0];
+  const rebel = state.players[2];
+  const actor = state.players[4];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.players[1].alive = false;
+  state.players[3].alive = false;
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "ai-renegade-slash-hold-1", kind: "slash", suit: "spade", point: 7 }];
+  lord.hp = 1;
+
+  const action = chooseAiAction(createAiDecisionContext(state, actor.id));
+
+  assert.equal(lord.alive, true);
+  assert.equal(rebel.alive, true);
+  assert.equal(action.type, "end-play-phase");
+});
+
+test("renegade ai should attack lord in final duel", () => {
+  const state = createInitialGame(42);
+  const lord = state.players[0];
+  const actor = state.players[4];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.players[1].alive = false;
+  state.players[2].alive = false;
+  state.players[3].alive = false;
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "ai-renegade-slash-finish-1", kind: "slash", suit: "club", point: 9 }];
+
+  const action = chooseAiAction(createAiDecisionContext(state, actor.id));
+
+  assert.equal(action.type, "play-card");
+  assert.equal(action.cardId, "ai-renegade-slash-finish-1");
+  assert.equal(action.targetId, lord.id);
+});
+
+test("renegade ai should prioritize inferred loyalist target before lord when lord-side is clearly stronger", () => {
+  const state = createInitialGame(42);
+  const lord = state.players[0];
+  const actor = state.players[4];
+  const likelyLoyalistA = state.players[1];
+  const likelyLoyalistB = state.players[2];
+  const likelyRebel = state.players[3];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "ai-renegade-slash-balance-1", kind: "slash", suit: "heart", point: 11 }];
+  actor.equipment.weapon = { id: "ai-renegade-range-weapon-1", kind: "weapon_qinggang_sword" };
+
+  lord.hp = 3;
+  likelyRebel.hp = 4;
+  state.events.push({ type: "rescue", message: `${likelyLoyalistA.name} 使用桃救回 ${lord.name}` });
+  state.events.push({ type: "rescue", message: `${likelyLoyalistB.name} 使用桃救回 ${lord.name}` });
+  state.events.push({ type: "damage", message: `${likelyRebel.name} 对 ${lord.name} 造成 1 点伤害` });
+
+  const action = chooseAiAction(createAiDecisionContext(state, actor.id));
+
+  assert.equal(action.type, "play-card");
+  assert.equal(action.cardId, "ai-renegade-slash-balance-1");
+  assert.notEqual(action.targetId, lord.id);
+  assert.equal(
+    action.targetId === likelyLoyalistA.id || action.targetId === likelyLoyalistB.id,
+    true
+  );
+});
+
 /**
  * 验证 AI 使用【决斗】时会优先选择手牌更少的敌方目标。
  */

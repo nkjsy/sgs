@@ -276,6 +276,13 @@ export function chooseAiAction(context: AiDecisionContext): TurnAction {
       return false;
     }
 
+    if (context.actor.identity === "renegade") {
+      const lord = context.state.players.find((player) => player.alive && player.identity === "lord");
+      if (lord && shouldRenegadeAvoidLordDamage(context, perception, lord)) {
+        return false;
+      }
+    }
+
     const enemies = context.state.players.filter(
       (player) => player.alive && player.id !== context.actor.id && shouldAttackPlayer(context, perception, player)
     );
@@ -450,6 +457,7 @@ function scoreSlashAction(context: AiDecisionContext, perception: AiPerception, 
   score += target.hp <= 1 ? 50 : 0;
   score += Math.max(0, getRelationScore(perception, target.id)) * 6;
   score += target.identity === "lord" && context.actor.identity === "rebel" ? 10 : 0;
+  score += getRenegadeLordSidePressureBonus(context, perception, target);
   return score;
 }
 
@@ -458,27 +466,28 @@ function scoreUtilityTrickAction(context: AiDecisionContext, perception: AiPerce
   const target = context.state.players.find((player) => player.id === action.targetId);
   const targetCardPressure = target ? target.hand.length + countEquipmentCards(target) + target.judgmentZone.delayedTricks.length : 0;
   const hostility = target ? Math.max(0, getRelationScore(perception, target.id)) : 0;
+  const renegadeTargetBonus = target ? getRenegadeLordSidePressureBonus(context, perception, target) : 0;
 
   if (kind === "dismantle" || kind === "snatch") {
-    return 48 + targetCardPressure * 5 + hostility * 4;
+    return 48 + targetCardPressure * 5 + hostility * 4 + renegadeTargetBonus;
   }
 
   if (kind === "duel") {
     const actorAdvantage = context.actor.hand.length - (target?.hand.length ?? 0);
     const lowHpBonus = target && target.hp <= 2 ? 12 : 0;
-    return 45 + actorAdvantage * 4 + lowHpBonus + hostility * 4;
+    return 45 + actorAdvantage * 4 + lowHpBonus + hostility * 4 + renegadeTargetBonus;
   }
 
   if (kind === "collateral") {
-    return 50 + targetCardPressure * 4 + hostility * 3;
+    return 50 + targetCardPressure * 4 + hostility * 3 + renegadeTargetBonus;
   }
 
   if (kind === "indulgence") {
-    return 42 + targetCardPressure * 3 + hostility * 2;
+    return 42 + targetCardPressure * 3 + hostility * 2 + renegadeTargetBonus;
   }
 
   if (kind === "fanjian") {
-    return 44 + (target ? Math.max(0, 4 - target.hp) * 4 : 0) + hostility * 3;
+    return 44 + (target ? Math.max(0, 4 - target.hp) * 4 : 0) + hostility * 3 + renegadeTargetBonus;
   }
 
   if (kind === "lijian") {
@@ -632,6 +641,12 @@ function shouldAttackPlayer(context: AiDecisionContext, perception: AiPerception
     return false;
   }
 
+  if (context.actor.identity === "renegade" && target.identity === "lord") {
+    if (shouldRenegadeAvoidLordDamage(context, perception, target)) {
+      return false;
+    }
+  }
+
   if (target.identity === "lord" && (context.actor.identity === "lord" || context.actor.identity === "loyalist")) {
     return false;
   }
@@ -680,6 +695,87 @@ function shouldAttackPlayer(context: AiDecisionContext, perception: AiPerception
   }
 
   return perception.inferredCampByPlayerId[target.id] === "lord-side" || relation >= 2;
+}
+
+function shouldRenegadeAvoidLordDamage(
+  context: AiDecisionContext,
+  perception: AiPerception,
+  lordTarget: AiDecisionContext["actor"]
+): boolean {
+  const alivePlayers = context.state.players.filter((player) => player.alive);
+  if (alivePlayers.length <= 2) {
+    return false;
+  }
+
+  if (lordTarget.hp <= 1) {
+    return true;
+  }
+
+  let aliveRebelSide = 0;
+  let aliveLordSide = 0;
+  for (const player of alivePlayers) {
+    const inferredCamp = perception.inferredCampByPlayerId[player.id] ?? "unknown";
+    if (inferredCamp === "rebel-side") {
+      aliveRebelSide += 1;
+    } else if (inferredCamp === "lord-side") {
+      aliveLordSide += 1;
+    }
+  }
+
+  if (aliveLordSide <= aliveRebelSide) {
+    return true;
+  }
+
+  return aliveLordSide - aliveRebelSide < 2 && lordTarget.hp <= 2;
+}
+
+function isRenegadeLordSideClearlyStronger(context: AiDecisionContext, perception: AiPerception): boolean {
+  if (context.actor.identity !== "renegade") {
+    return false;
+  }
+
+  const alivePlayers = context.state.players.filter((player) => player.alive);
+  let aliveRebelSide = 0;
+  let aliveLordSide = 0;
+  for (const player of alivePlayers) {
+    const inferredCamp = perception.inferredCampByPlayerId[player.id] ?? "unknown";
+    if (inferredCamp === "rebel-side") {
+      aliveRebelSide += 1;
+    } else if (inferredCamp === "lord-side") {
+      aliveLordSide += 1;
+    }
+  }
+
+  return aliveLordSide - aliveRebelSide >= 2;
+}
+
+function getRenegadeLordSidePressureBonus(
+  context: AiDecisionContext,
+  perception: AiPerception,
+  target: AiDecisionContext["actor"]
+): number {
+  if (!isRenegadeLordSideClearlyStronger(context, perception)) {
+    return 0;
+  }
+
+  const inferredCamp = perception.inferredCampByPlayerId[target.id] ?? "unknown";
+  if (inferredCamp !== "lord-side") {
+    return 0;
+  }
+
+  const hasNonLordLordSideTarget = context.state.players.some(
+    (player) =>
+      player.alive &&
+      player.id !== context.actor.id &&
+      player.identity !== "lord" &&
+      (perception.inferredCampByPlayerId[player.id] ?? "unknown") === "lord-side"
+  );
+
+  if (target.identity === "lord") {
+    return hasNonLordLordSideTarget ? -12 : 16;
+  }
+
+  return 24;
 }
 
 function isLikelyAlly(context: AiDecisionContext, perception: AiPerception, target: AiDecisionContext["actor"]): boolean {

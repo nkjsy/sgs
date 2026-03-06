@@ -1170,13 +1170,12 @@ export function resolvePendingFankui(
     }
   }
 
-  const remaining = pending.remainingCount - 1;
-  if (remaining <= 0 || !hasAnyCardForFankui(source)) {
-    state.pendingFankui = null;
-    return;
+  state.pendingFankui = null;
+  if (!state.manualMassTrickStepMode) {
+    while (state.pendingMassTrick && !state.pendingFankui) {
+      resolvePendingMassTrickStep(state);
+    }
   }
-
-  pending.remainingCount = remaining;
 }
 
 export function resolvePendingCollateral(state: GameState, enabled: boolean): void {
@@ -1548,8 +1547,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
     pushEvent(state, "card", `${actor.name} 发动激将，对 ${target.name} 使用杀`);
     const slashTargets = getSlashTargetsForResolution(state, actor, target, action);
     for (const slashTarget of slashTargets) {
-      const canUseDodge = canTargetUseDodgeAgainstSlash(state, actor, slashTarget);
-      resolveSlashOnTarget(state, actor, slashTarget, provided, "杀", false, canUseDodge);
+      resolveSlashOnTarget(state, actor, slashTarget, provided, "杀", false);
       if (state.winner) {
         break;
       }
@@ -1593,7 +1591,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
     pushEvent(state, "equip", `${actor.name} 发动丈八蛇矛，将两张手牌当杀使用`);
 
     card = {
-      id: `${VIRTUAL_SPEAR_SLASH_CARD_ID}-${state.turnCount}-${state.events.length}`,
+      id: `${VIRTUAL_SPEAR_SLASH_CARD_ID}::${subA.id},${subB.id}::${state.turnCount}-${state.events.length}`,
       kind: "slash",
       suit: "spade",
       point: 7
@@ -1640,8 +1638,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
     pushEvent(state, "card", `${actor.name} 对 ${target.name} 使用杀`);
     const slashTargets = getSlashTargetsForResolution(state, actor, target, action);
     for (const slashTarget of slashTargets) {
-      const canUseDodge = canTargetUseDodgeAgainstSlash(state, actor, slashTarget);
-      resolveSlashOnTarget(state, actor, slashTarget, card, "杀", false, canUseDodge);
+      resolveSlashOnTarget(state, actor, slashTarget, card, "杀", false);
       if (state.winner) {
         break;
       }
@@ -1859,7 +1856,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
       trickCard: card
     };
     if (!state.manualMassTrickStepMode) {
-      while (state.pendingMassTrick) {
+      while (state.pendingMassTrick && !state.pendingFankui) {
         resolvePendingMassTrickStep(state);
       }
     }
@@ -1979,8 +1976,7 @@ function resolveSlashOnTarget(
   target: PlayerState,
   slashCard: Card,
   slashLabel = "杀",
-  shouldDiscardSlash = true,
-  canUseDodge = true
+  shouldDiscardSlash = true
 ): void {
   if (!source.alive || !target.alive) {
     if (shouldDiscardSlash) {
@@ -1989,10 +1985,12 @@ function resolveSlashOnTarget(
     return;
   }
 
-  const redirected = tryApplyLiuliRedirection(state, source, target, slashCard, slashLabel, shouldDiscardSlash, canUseDodge);
+  const redirected = tryApplyLiuliRedirection(state, source, target, slashCard, slashLabel, shouldDiscardSlash);
   if (redirected) {
     return;
   }
+
+  const canUseDodge = canTargetUseDodgeAgainstSlash(state, source, target);
 
   if (source.equipment.weapon?.kind === "weapon_double_sword" && source.gender !== target.gender) {
     if (target.hand.length > 0) {
@@ -2132,8 +2130,7 @@ function tryApplyLiuliRedirection(
   target: PlayerState,
   slashCard: Card,
   slashLabel: string,
-  shouldDiscardSlash: boolean,
-  canUseDodge: boolean
+  shouldDiscardSlash: boolean
 ): boolean {
   if (!hasSkill(state, target.id, STANDARD_SKILL_IDS.daqiaoLiuli)) {
     return false;
@@ -2157,7 +2154,7 @@ function tryApplyLiuliRedirection(
 
   const redirectedTarget = candidates.sort((left, right) => left.hp - right.hp)[0];
   pushEvent(state, "skill", `${target.name} 发动流离，弃置 ${discarded.id}，将${slashLabel}转移给 ${redirectedTarget.name}`);
-  resolveSlashOnTarget(state, source, redirectedTarget, slashCard, slashLabel, shouldDiscardSlash, canUseDodge);
+  resolveSlashOnTarget(state, source, redirectedTarget, slashCard, slashLabel, shouldDiscardSlash);
   return true;
 }
 
@@ -2209,7 +2206,7 @@ function canTargetUseDodgeAgainstSlash(state: GameState, source: PlayerState, ta
     return true;
   }
 
-  const judgeCard = drawJudgmentCard(state, source);
+  const judgeCard = drawJudgmentCard(state, source, { reason: "tieqi" });
   if (!judgeCard) {
     return true;
   }
@@ -2577,7 +2574,7 @@ function resolveEightDiagramJudge(state: GameState, target: PlayerState): boolea
     return null;
   }
 
-  const judgeCard = drawJudgmentCard(state, target);
+  const judgeCard = drawJudgmentCard(state, target, { reason: "eight-diagram" });
   if (!judgeCard) {
     return null;
   }
@@ -2751,6 +2748,10 @@ function resolvePendingMassTrickStep(state: GameState): void {
     return;
   }
 
+  if (state.pendingFankui) {
+    return;
+  }
+
   const source = getPlayerById(state, pending.sourceId);
   if (!source || !source.alive) {
     finishPendingMassTrick(state);
@@ -2809,6 +2810,10 @@ function resolvePendingMassTrickStep(state: GameState): void {
   }
 
   pending.cursor += 1;
+  if (state.pendingFankui) {
+    return;
+  }
+
   if (pending.cursor >= pending.targetIds.length) {
     finishPendingMassTrick(state);
   }
@@ -2923,7 +2928,7 @@ function resolveJudgePhase(state: GameState, playerId: string): void {
       continue;
     }
 
-    const judgeCard = drawJudgmentCard(state, player);
+    const judgeCard = drawJudgmentCard(state, player, { reason: "delayed-trick", trickKind: trick.kind });
     if (!judgeCard) {
       state.discard.push(trick);
       continue;
@@ -3030,7 +3035,20 @@ function shouldPlayDelayedNullify(
  * @param player 判定角色。
  * @returns 判定牌。
  */
-function drawJudgmentCard(state: GameState, player: PlayerState): Card | undefined {
+type JudgmentContext =
+  | { reason: "delayed-trick"; trickKind: "indulgence" | "lightning" }
+  | { reason: "tieqi" | "eight-diagram" | "ganglie" | "luoshen" | "generic" };
+
+interface GuicaiDecision {
+  responder: PlayerState;
+  replacementCardIndex: number;
+}
+
+function drawJudgmentCard(
+  state: GameState,
+  player: PlayerState,
+  context: JudgmentContext = { reason: "generic" }
+): Card | undefined {
   if (state.deck.length === 0) {
     refillDeckFromDiscard(state);
   }
@@ -3041,15 +3059,16 @@ function drawJudgmentCard(state: GameState, player: PlayerState): Card | undefin
   }
 
   let judgeCard = drawnCard;
-  const guicaiOwner = findGuicaiResponder(state, player);
-  if (guicaiOwner) {
-    const replacement = guicaiOwner.hand.shift() as Card;
+  const guicaiDecision = findGuicaiResponder(state, player, judgeCard, context);
+  if (guicaiDecision) {
+    const { responder, replacementCardIndex } = guicaiDecision;
+    const replacement = responder.hand.splice(replacementCardIndex, 1)[0] as Card;
     state.discard.push(judgeCard);
     judgeCard = replacement;
     pushEvent(
       state,
       "skill",
-      `${guicaiOwner.name} 发动鬼才，将 ${player.name} 的判定牌 ${drawnCard.id}（${getCardSuit(drawnCard)}${getCardPoint(drawnCard)}）替换为 ${replacement.id}（${getCardSuit(replacement)}${getCardPoint(replacement)}）`
+      `${responder.name} 发动鬼才，将 ${player.name} 的判定牌 ${drawnCard.id}（${getCardSuit(drawnCard)}${getCardPoint(drawnCard)}）替换为 ${replacement.id}（${getCardSuit(replacement)}${getCardPoint(replacement)}）`
     );
   }
 
@@ -3418,6 +3437,40 @@ function tryTriggerJianxiong(state: GameState, source: PlayerState, target: Play
   }
 
   if (!damageCard) {
+    drawCards(state, target.id, 1);
+    pushEvent(state, "skill", `${target.name} 发动奸雄，改为摸 1 张牌`);
+    return;
+  }
+
+  if (damageCard.id.startsWith(VIRTUAL_SPEAR_SLASH_CARD_ID)) {
+    const sourceCardIds = parseVirtualSpearSourceCardIds(damageCard.id);
+    if (sourceCardIds.length > 0) {
+      let obtainedCount = 0;
+      for (const sourceCardId of sourceCardIds) {
+        const discardIndex = state.discard.findIndex((candidate) => candidate.id === sourceCardId);
+        if (discardIndex < 0) {
+          continue;
+        }
+
+        const [obtained] = state.discard.splice(discardIndex, 1);
+        if (!obtained) {
+          continue;
+        }
+
+        target.hand.push(obtained);
+        obtainedCount += 1;
+      }
+
+      if (obtainedCount > 0) {
+        pushEvent(state, "skill", `${target.name} 发动奸雄，获得了丈八蛇矛转化使用的 ${obtainedCount} 张牌`);
+        return;
+      }
+    }
+  }
+
+  if (damageCard.id.startsWith("__virtual_")) {
+    drawCards(state, target.id, 1);
+    pushEvent(state, "skill", `${target.name} 发动奸雄，改为摸 1 张牌`);
     return;
   }
 
@@ -3441,6 +3494,23 @@ function tryTriggerJianxiong(state: GameState, source: PlayerState, target: Play
   obtainedIds.add(obtained.id);
   target.hand.push(obtained);
   pushEvent(state, "skill", `${target.name} 发动奸雄，获得了造成伤害的牌 ${obtained.id}`);
+}
+
+function parseVirtualSpearSourceCardIds(cardId: string): string[] {
+  const marker = `${VIRTUAL_SPEAR_SLASH_CARD_ID}::`;
+  if (!cardId.startsWith(marker)) {
+    return [];
+  }
+
+  const payload = cardId.slice(marker.length);
+  const separatorIndex = payload.indexOf("::");
+  const encoded = separatorIndex >= 0 ? payload.slice(0, separatorIndex) : payload;
+  const ids = encoded
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  return Array.from(new Set(ids));
 }
 
 function getJianxiongObtainedCardIds(state: GameState): Set<string> {
@@ -3522,19 +3592,17 @@ function tryTriggerFankui(state: GameState, sourceId: string, targetId: string, 
     state.pendingFankui = {
       sourceId: source.id,
       targetId: target.id,
-      remainingCount: Math.max(1, damageAmount)
+      remainingCount: 1
     };
     return;
   }
 
-  for (let index = 0; index < damageAmount; index += 1) {
+  if (damageAmount > 0) {
     const taken = takeOneCardForFankui(state, source);
-    if (!taken) {
-      break;
+    if (taken) {
+      target.hand.push(taken);
+      pushEvent(state, "skill", `${target.name} 发动反馈，获得了 ${source.name} 的 ${taken.id}`);
     }
-
-    target.hand.push(taken);
-    pushEvent(state, "skill", `${target.name} 发动反馈，获得了 ${source.name} 的 ${taken.id}`);
   }
 }
 
@@ -3623,7 +3691,12 @@ function resolveCollateralOutcome(
   state.discard.push(collateralCard);
 }
 
-function findGuicaiResponder(state: GameState, judgedPlayer: PlayerState): PlayerState | undefined {
+function findGuicaiResponder(
+  state: GameState,
+  judgedPlayer: PlayerState,
+  originalJudgeCard: Card,
+  context: JudgmentContext
+): GuicaiDecision | undefined {
   const responders = getAlivePlayersFrom(state, judgedPlayer.id);
   for (const responder of responders) {
     if (!hasSkill(state, responder.id, STANDARD_SKILL_IDS.simayiGuicai)) {
@@ -3634,22 +3707,122 @@ function findGuicaiResponder(state: GameState, judgedPlayer: PlayerState): Playe
       continue;
     }
 
-    if (!shouldUseGuicai(responder, judgedPlayer)) {
+    const replacementCardIndex = selectGuicaiReplacementCardIndex(responder, judgedPlayer, originalJudgeCard, context);
+    if (replacementCardIndex < 0) {
       continue;
     }
 
-    return responder;
+    return {
+      responder,
+      replacementCardIndex
+    };
   }
 
   return undefined;
 }
 
-function shouldUseGuicai(responder: PlayerState, judgedPlayer: PlayerState): boolean {
+function selectGuicaiReplacementCardIndex(
+  responder: PlayerState,
+  judgedPlayer: PlayerState,
+  originalJudgeCard: Card,
+  context: JudgmentContext
+): number {
   if (!responder.isAi) {
-    return true;
+    return 0;
   }
 
-  return isSameCamp(responder.identity, judgedPlayer.identity);
+  const sameCamp = isSameCamp(responder.identity, judgedPlayer.identity);
+
+  if (context.reason === "delayed-trick") {
+    if (context.trickKind === "indulgence") {
+      if (sameCamp) {
+        if (isHeart(originalJudgeCard)) {
+          return -1;
+        }
+        return responder.hand.findIndex((card) => isHeart(card));
+      }
+
+      if (!isHeart(originalJudgeCard)) {
+        return -1;
+      }
+      return responder.hand.findIndex((card) => !isHeart(card));
+    }
+
+    const isLightningHit = isSpade(originalJudgeCard) && isPointBetween(originalJudgeCard, 2, 9);
+    if (sameCamp) {
+      if (!isLightningHit) {
+        return -1;
+      }
+      return responder.hand.findIndex((card) => !(isSpade(card) && isPointBetween(card, 2, 9)));
+    }
+
+    if (isLightningHit) {
+      return -1;
+    }
+    return responder.hand.findIndex((card) => isSpade(card) && isPointBetween(card, 2, 9));
+  }
+
+  if (context.reason === "eight-diagram") {
+    const originalSuccess = isRed(originalJudgeCard);
+    if (sameCamp) {
+      if (originalSuccess) {
+        return -1;
+      }
+      return responder.hand.findIndex((card) => isRed(card));
+    }
+
+    if (!originalSuccess) {
+      return -1;
+    }
+    return responder.hand.findIndex((card) => !isRed(card));
+  }
+
+  if (context.reason === "tieqi") {
+    const originalSuccess = isRed(originalJudgeCard);
+    if (sameCamp) {
+      if (originalSuccess) {
+        return -1;
+      }
+      return responder.hand.findIndex((card) => isRed(card));
+    }
+
+    if (!originalSuccess) {
+      return -1;
+    }
+    return responder.hand.findIndex((card) => !isRed(card));
+  }
+
+  if (context.reason === "ganglie") {
+    const originalSuccess = !isHeart(originalJudgeCard);
+    if (sameCamp) {
+      if (originalSuccess) {
+        return -1;
+      }
+      return responder.hand.findIndex((card) => !isHeart(card));
+    }
+
+    if (!originalSuccess) {
+      return -1;
+    }
+    return responder.hand.findIndex((card) => isHeart(card));
+  }
+
+  if (context.reason === "luoshen") {
+    const originalSuccess = isBlack(originalJudgeCard);
+    if (sameCamp) {
+      if (originalSuccess) {
+        return -1;
+      }
+      return responder.hand.findIndex((card) => isBlack(card));
+    }
+
+    if (!originalSuccess) {
+      return -1;
+    }
+    return responder.hand.findIndex((card) => isRed(card));
+  }
+
+  return -1;
 }
 
 function getDamageAmountWithLuoyi(
@@ -4035,7 +4208,7 @@ function tryTriggerGanglie(state: GameState, sourceId: string, targetId: string,
       return;
     }
 
-    const judgeCard = drawJudgmentCard(state, owner);
+    const judgeCard = drawJudgmentCard(state, owner, { reason: "ganglie" });
     if (!judgeCard) {
       continue;
     }
@@ -4487,7 +4660,7 @@ function tryTriggerLuoshen(state: GameState, owner: PlayerState): void {
   }
 
   while (true) {
-    const judgeCard = drawJudgmentCard(state, owner);
+    const judgeCard = drawJudgmentCard(state, owner, { reason: "luoshen" });
     if (!judgeCard) {
       return;
     }
@@ -4662,6 +4835,68 @@ function consumeSlashLikeCard(state: GameState, player: PlayerState, contextName
     return undefined;
   }
 
+  const selectedCardChoice = consumeQueuedResponseCardChoice(state, player.id, "slash");
+  if (selectedCardChoice) {
+    const selectedIds = selectedCardChoice
+      .split(",")
+      .map((id) => id.trim())
+      .filter((id) => id.length > 0);
+
+    if (
+      selectedIds.length === 2 &&
+      selectedIds[0] !== selectedIds[1] &&
+      player.equipment.weapon?.kind === "weapon_spear"
+    ) {
+      const firstIndex = player.hand.findIndex((card) => card.id === selectedIds[0]);
+      const secondIndex = player.hand.findIndex((card) => card.id === selectedIds[1]);
+      if (firstIndex >= 0 && secondIndex >= 0) {
+        const [highIndex, lowIndex] = firstIndex > secondIndex ? [firstIndex, secondIndex] : [secondIndex, firstIndex];
+        const [highCard] = player.hand.splice(highIndex, 1);
+        const [lowCard] = player.hand.splice(lowIndex, 1);
+        state.discard.push(lowCard, highCard);
+        pushEvent(state, "equip", `${player.name} 在${contextName}中发动丈八蛇矛，将两张手牌当杀打出`);
+        return {
+          id: `${VIRTUAL_SPEAR_SLASH_CARD_ID}::${lowCard.id},${highCard.id}::rsp-${state.turnCount}-${state.events.length}`,
+          kind: "slash",
+          suit: "spade",
+          point: 7
+        };
+      }
+    }
+
+    const selectedIndex = player.hand.findIndex((card) => card.id === selectedCardChoice);
+    if (selectedIndex >= 0) {
+      const selectedCard = player.hand[selectedIndex] as Card;
+      const canUseAsSlash =
+        selectedCard.kind === "slash" ||
+        (hasSkill(state, player.id, STANDARD_SKILL_IDS.zhaoyunLongdan) && selectedCard.kind === "dodge") ||
+        (hasSkill(state, player.id, STANDARD_SKILL_IDS.guanyuWusheng) && isRed(selectedCard));
+
+      if (canUseAsSlash) {
+        const [consumed] = player.hand.splice(selectedIndex, 1);
+        tryTriggerLianyingAfterHandLoss(state, player);
+
+        if (consumed.kind === "slash") {
+          return consumed;
+        }
+
+        if (hasSkill(state, player.id, STANDARD_SKILL_IDS.zhaoyunLongdan) && consumed.kind === "dodge") {
+          pushEvent(state, "skill", `${player.name} 在${contextName}中发动龙胆，将闪当杀打出`);
+          return {
+            ...consumed,
+            kind: "slash"
+          };
+        }
+
+        pushEvent(state, "skill", `${player.name} 在${contextName}中发动武圣，将红色手牌当杀打出`);
+        return {
+          ...consumed,
+          kind: "slash"
+        };
+      }
+    }
+  }
+
   const slash = consumeFirstCardByKind(state, player, "slash");
   if (slash) {
     return slash;
@@ -4703,7 +4938,7 @@ function consumeSlashLikeCard(state: GameState, player: PlayerState, contextName
     state.discard.push(subA, subB);
     pushEvent(state, "equip", `${player.name} 在${contextName}中发动丈八蛇矛，将两张手牌当杀打出`);
     return {
-      id: `${VIRTUAL_SPEAR_SLASH_CARD_ID}-rsp-${state.turnCount}-${state.events.length}`,
+      id: `${VIRTUAL_SPEAR_SLASH_CARD_ID}::${subA.id},${subB.id}::rsp-${state.turnCount}-${state.events.length}`,
       kind: "slash",
       suit: "spade",
       point: 7

@@ -51,6 +51,8 @@ import "./styles.css";
 
 type Game = ReturnType<typeof createInitialGame>;
 
+const VIRTUAL_KUROU_CARD_ID = "__virtual_kurou__";
+
 type EventStyle = {
   tag: string;
 };
@@ -70,7 +72,7 @@ type PendingHumanResponse = {
   action: TurnAction;
   previewCardEventMessage?: string;
   allowRespond?: boolean;
-  nullifyTrickKind?: "dismantle" | "snatch" | "duel" | "barbarian" | "archery" | "taoyuan" | "harvest" | "collateral";
+  nullifyTrickKind?: "dismantle" | "snatch" | "duel" | "barbarian" | "archery" | "taoyuan" | "harvest" | "collateral" | "ex_nihilo";
   nullifySourceId?: string;
   nullifyTargetId?: string;
   nullifyChosenDecisions?: boolean[];
@@ -534,6 +536,7 @@ let selectedDiscardCardIds: string[] = [];
 let selectedAxeCostCardIds: string[] = [];
 let spearComposeMode = false;
 let selectedSpearCostCardIds: string[] = [];
+let selectedSpearResponseCardIds: string[] = [];
 let selectedZhihengCardIds: string[] = [];
 
 if (!foundApp) {
@@ -662,6 +665,7 @@ function resetUiSelections(): void {
   selectedAxeCostCardIds = [];
   spearComposeMode = false;
   selectedSpearCostCardIds = [];
+  selectedSpearResponseCardIds = [];
   selectedZhihengCardIds = [];
 }
 
@@ -1032,6 +1036,32 @@ function renderHumanResponsePanel(pending: PendingHumanResponse): string {
         <div class="hand-list">${cards}</div>
         <div class="response-actions">
           <button data-role="response-choice" data-enabled="1" ${canRespondWithNormalDodge(game, getHumanPlayer(game).id) ? "" : "disabled"}>使用普通闪</button>
+          <button data-role="response-choice" data-enabled="0">不响应</button>
+        </div>
+      `;
+    }
+  }
+
+  if (pending.kind === "slash" && canUseSpearForSlashResponse(game)) {
+    const options = getPendingSpearResponseOptions(game);
+    if (options.length > 0) {
+      const cards = options
+        .map(
+          (card) =>
+            `<button class="hand-card ${selectedSpearResponseCardIds.includes(card.id) ? "selected" : ""}" data-role="spear-response-card" data-card-id="${card.id}" title="丈八·${getCardKindLabelZh(card.kind)}">
+              ${renderCardCornerMarks(card)}
+              <img class="card-icon" src="${ASSET_BASE}/cards/${card.kind}.png" alt="${getCardKindLabelZh(card.kind)}" />
+            </button>`
+        )
+        .join("");
+
+      return `
+        <div class="status">${pending.message}</div>
+        <div class="status">你可指定 2 张手牌发动【丈八蛇矛】当【杀】打出（已选 ${selectedSpearResponseCardIds.length}/2）。</div>
+        <div class="hand-list">${cards}</div>
+        <div class="response-actions">
+          <button data-role="spear-response-confirm" ${selectedSpearResponseCardIds.length === 2 ? "" : "disabled"}>发动丈八响应</button>
+          <button data-role="response-choice" data-enabled="1" ${pending.allowRespond === false ? "disabled" : ""}>使用普通杀</button>
           <button data-role="response-choice" data-enabled="0">不响应</button>
         </div>
       `;
@@ -1515,6 +1545,15 @@ function render(): void {
     selectedSpearCostCardIds = [];
   }
 
+  if (pendingResponse?.kind === "slash" && canUseSpearForSlashResponse(game)) {
+    const handIdsForResponse = new Set(getHumanPlayer(game).hand.map((card) => card.id));
+    selectedSpearResponseCardIds = selectedSpearResponseCardIds
+      .filter((cardId) => handIdsForResponse.has(cardId))
+      .slice(0, 2);
+  } else if (selectedSpearResponseCardIds.length > 0) {
+    selectedSpearResponseCardIds = [];
+  }
+
   if (activeSkillModeId === "zhiheng") {
     const validZhihengIds = new Set(getZhihengSelectableCardIds(game));
     selectedZhihengCardIds = selectedZhihengCardIds.filter((cardId) => validZhihengIds.has(cardId));
@@ -1551,7 +1590,7 @@ function render(): void {
     pendingZoneCardChoiceActions = [];
   }
 
-  if (!selectedCardId && pendingPrimaryTargetId) {
+  if (!selectedCardId && pendingPrimaryTargetId && !spearComposeMode) {
     pendingPrimaryTargetId = null;
     pendingSecondaryTargetId = null;
   }
@@ -3207,6 +3246,60 @@ function bindHumanResponseButtons(): void {
     });
   });
 
+  const spearResponseCardButtons = app.querySelectorAll<HTMLButtonElement>("button[data-role='spear-response-card']");
+  spearResponseCardButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!pendingHumanResponse || pendingHumanResponse.kind !== "slash" || !canUseSpearForSlashResponse(game)) {
+        return;
+      }
+
+      const cardId = button.dataset.cardId;
+      if (!cardId) {
+        return;
+      }
+
+      if (selectedSpearResponseCardIds.includes(cardId)) {
+        selectedSpearResponseCardIds = selectedSpearResponseCardIds.filter((id) => id !== cardId);
+      } else if (selectedSpearResponseCardIds.length < 2) {
+        selectedSpearResponseCardIds = [...selectedSpearResponseCardIds, cardId];
+      }
+
+      render();
+      ensureAutoLoop();
+    });
+  });
+
+  const spearResponseConfirm = app.querySelector<HTMLButtonElement>("button[data-role='spear-response-confirm']");
+  spearResponseConfirm?.addEventListener("click", () => {
+    if (!pendingHumanResponse || pendingHumanResponse.kind !== "slash") {
+      return;
+    }
+
+    if (!canUseSpearForSlashResponse(game) || selectedSpearResponseCardIds.length !== 2) {
+      return;
+    }
+
+    const current = pendingHumanResponse;
+    const human = getHumanPlayer(game);
+    queueResponseCardChoice(game, human.id, "slash", selectedSpearResponseCardIds.join(","));
+    selectedSpearResponseCardIds = [];
+    pendingHumanResponse = null;
+
+    if (game.pendingDuel && game.pendingDuel.currentId === human.id) {
+      resolvePendingDuelResponse(game, true);
+      runAutoUntilHumanChoice();
+      render();
+      ensureAutoLoop();
+      return;
+    }
+
+    queueResponseDecision(game, human.id, "slash", true);
+    applyAction(game, current.action);
+    runAutoUntilHumanChoice();
+    render();
+    ensureAutoLoop();
+  });
+
   const fankuiButtons = app.querySelectorAll<HTMLButtonElement>("button[data-role='fankui-choice']");
   fankuiButtons.forEach((button) => {
     button.addEventListener("click", () => {
@@ -3687,7 +3780,7 @@ function getPendingHumanResponseForAiAction(state: Game, action: TurnAction): Pe
 
   const previewCardEventMessage = buildCardEventPreviewMessage(state, action, kind);
 
-  const nullifySingleTargetKinds = new Set(["dismantle", "snatch", "duel", "collateral"]);
+  const nullifySingleTargetKinds = new Set(["dismantle", "snatch", "duel", "collateral", "ex_nihilo"]);
   const nullifyGroupKinds = new Set(["barbarian", "archery", "taoyuan", "harvest"]);
   const canNullifyCurrentAction = nullifySingleTargetKinds.has(kind) || nullifyGroupKinds.has(kind);
 
@@ -3771,7 +3864,18 @@ function getPendingHumanResponseForAiAction(state: Game, action: TurnAction): Pe
     };
   }
 
-  if (kind === "archery" && action.targetId === human.id && canRespondWithDodge(state, human.id)) {
+  if (kind === "archery" && action.targetId === human.id) {
+    if (human.equipment.armor?.kind === "armor_eight_diagram") {
+      const judgedAsDodge = prepareEightDiagramJudge(state, human.id);
+      if (judgedAsDodge === true) {
+        return null;
+      }
+    }
+
+    if (!canRespondWithDodge(state, human.id)) {
+      return null;
+    }
+
     return {
       kind: "dodge",
       message: `是否打出【闪】响应【万箭齐发】？`,
@@ -4528,6 +4632,23 @@ function isBlackCard(card: Card): boolean {
   return card.suit === "spade" || card.suit === "club";
 }
 
+function canUseSpearForSlashResponse(state: Game): boolean {
+  const human = getHumanPlayer(state);
+  if (!human.alive) {
+    return false;
+  }
+
+  return human.equipment.weapon?.kind === "weapon_spear" && human.hand.length >= 2;
+}
+
+function getPendingSpearResponseOptions(state: Game): Card[] {
+  if (pendingHumanResponse?.kind !== "slash" || !canUseSpearForSlashResponse(state)) {
+    return [];
+  }
+
+  return [...getHumanPlayer(state).hand];
+}
+
 function setDefaultHumanResponsePreferences(state: Game): void {
   const human = state.players[0];
   if (!human) {
@@ -4795,6 +4916,14 @@ function choosePreferredAction(actions: TurnAction[]): TurnAction {
 
 function executeHumanChosenAction(action: TurnAction): void {
   const human = getHumanPlayer(game);
+  const selfRescuePrompt = getPendingSelfRescuePromptForHumanAction(game, action);
+  if (selfRescuePrompt) {
+    pendingHumanResponse = selfRescuePrompt;
+    render();
+    ensureAutoLoop();
+    return;
+  }
+
   const inferredKind = inferActionCardKindForResponse(game, action);
   const shouldSkipPreNullifyPromptForHumanGroupTrick =
     action.type === "play-card" &&
@@ -4851,6 +4980,28 @@ function executeHumanChosenAction(action: TurnAction): void {
   runAutoUntilHumanChoice();
   render();
   ensureAutoLoop();
+}
+
+function getPendingSelfRescuePromptForHumanAction(state: Game, action: TurnAction): PendingHumanResponse | null {
+  if (action.type !== "play-card") {
+    return null;
+  }
+
+  const human = getHumanPlayer(state);
+  if (action.actorId !== human.id || action.cardId !== VIRTUAL_KUROU_CARD_ID) {
+    return null;
+  }
+
+  if (human.hp > 1 || !canRespondWithPeach(state, human.id)) {
+    return null;
+  }
+
+  return {
+    kind: "peach",
+    message: "你发动【苦肉】后将进入濒死。是否允许使用【桃】自救？",
+    action,
+    allowRespond: true
+  };
 }
 
 function isNullifiableActionKind(kind: string | null): boolean {

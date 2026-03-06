@@ -502,6 +502,47 @@ test("barbarian should require slash response for each target", () => {
   assert.equal(targetWithoutSlash.hp, hpBefore - 1);
 });
 
+test("barbarian should pause next target until fankui is resolved", () => {
+  const state = createInitialGame(42);
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  const source = state.players[0];
+  const simayi = state.players[1];
+  const nextTarget = state.players[2];
+
+  source.hand = [
+    { id: "barbarian-fankui-1", kind: "barbarian" },
+    { id: "fankui-source-card-1", kind: "dodge", suit: "heart", point: 5 }
+  ];
+  simayi.hand = [];
+  nextTarget.hand = [];
+
+  assignSkillToPlayer(state, simayi.id, STANDARD_SKILL_IDS.simayiFankui);
+  simayi.isAi = false;
+  setFankuiPromptMode(state, simayi.id, true);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+
+  const nextHpBefore = nextTarget.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "barbarian-fankui-1"
+  });
+
+  assert.ok(state.pendingFankui, "simayi should get pending fankui prompt first");
+  assert.equal(nextTarget.hp, nextHpBefore, "next target should not resolve before fankui");
+
+  resolvePendingFankui(state, false);
+
+  assert.equal(state.pendingFankui, null);
+  assert.equal(nextTarget.hp, nextHpBefore - 1, "after fankui resolution, barbarian should continue to next target");
+});
+
 /**
  * 验证【万箭齐发】可被目标身份同阵营角色用【无懈可击】抵消。
  */
@@ -2741,6 +2782,114 @@ test("fankui skill should gain one card from damage source", () => {
   assert.equal(source.hand.some((card) => card.id === "fankui-src-card-1"), false);
 });
 
+test("fankui should trigger once when taking 2 damage in one event", () => {
+  const state = createInitialGame(42);
+  const source = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, source.id, STANDARD_SKILL_IDS.xuchuLuoyi);
+  assignSkillToPlayer(state, target.id, STANDARD_SKILL_IDS.simayiFankui);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  state.luoyiActivePlayerId = source.id;
+
+  source.hand = [
+    { id: "slash-fankui-luoyi-1", kind: "slash", suit: "spade", point: 10 },
+    { id: "fankui-luoyi-src-1", kind: "dodge", suit: "heart", point: 4 },
+    { id: "fankui-luoyi-src-2", kind: "peach", suit: "club", point: 8 }
+  ];
+  target.hand = [];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "slash-fankui-luoyi-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, 2);
+  assert.equal(target.hand.length, 1);
+  assert.equal(source.hand.length, 1);
+});
+
+test("ai guicai should not worsen allied ganglie when judgment is already successful", () => {
+  const state = createInitialGame(42);
+  const source = state.players[1];
+  const ganglieOwner = state.players[2];
+  const guicaiOwner = state.players[3];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, ganglieOwner.id, STANDARD_SKILL_IDS.xiahoudunGanglie);
+  assignSkillToPlayer(state, guicaiOwner.id, STANDARD_SKILL_IDS.simayiGuicai);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.hand = [
+    { id: "ganglie-guicai-safe-slash-1", kind: "slash", suit: "spade", point: 7 },
+    { id: "ganglie-guicai-safe-src-1", kind: "peach", suit: "club", point: 3 },
+    { id: "ganglie-guicai-safe-src-2", kind: "dodge", suit: "diamond", point: 11 }
+  ];
+  guicaiOwner.hand = [{ id: "ganglie-guicai-safe-heart-1", kind: "peach", suit: "heart", point: 8 }];
+  state.deck = [{ id: "ganglie-guicai-safe-judge-black-1", kind: "dodge", suit: "spade", point: 10 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "ganglie-guicai-safe-slash-1",
+    targetId: ganglieOwner.id
+  });
+
+  assert.equal(source.hand.length, 0);
+  assert.equal(guicaiOwner.hand.length, 1);
+  assert.equal(state.discard.some((card) => card.id === "ganglie-guicai-safe-heart-1"), false);
+});
+
+test("ai guicai should sabotage enemy ganglie by replacing to heart", () => {
+  const state = createInitialGame(42);
+  const source = state.players[1];
+  const ganglieOwner = state.players[2];
+  const guicaiOwner = state.players[4];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, ganglieOwner.id, STANDARD_SKILL_IDS.xiahoudunGanglie);
+  assignSkillToPlayer(state, guicaiOwner.id, STANDARD_SKILL_IDS.simayiGuicai);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.hand = [
+    { id: "ganglie-guicai-break-slash-1", kind: "slash", suit: "spade", point: 6 },
+    { id: "ganglie-guicai-break-src-1", kind: "peach", suit: "club", point: 5 },
+    { id: "ganglie-guicai-break-src-2", kind: "dodge", suit: "diamond", point: 12 }
+  ];
+  guicaiOwner.hand = [
+    { id: "ganglie-guicai-break-black-first-1", kind: "slash", suit: "club", point: 9 },
+    { id: "ganglie-guicai-break-heart-second-1", kind: "peach", suit: "heart", point: 4 }
+  ];
+  state.deck = [{ id: "ganglie-guicai-break-judge-black-1", kind: "dodge", suit: "spade", point: 8 }];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "ganglie-guicai-break-slash-1",
+    targetId: ganglieOwner.id
+  });
+
+  assert.equal(source.hand.length, 2);
+  assert.ok(state.discard.some((card) => card.id === "ganglie-guicai-break-heart-second-1"));
+  assert.ok(guicaiOwner.hand.some((card) => card.id === "ganglie-guicai-break-black-first-1"));
+});
+
 /**
  * 验证司马懿【反馈】在未被救回而直接阵亡时不会触发。
  */
@@ -2886,6 +3035,57 @@ test("guicai skill should not replace judgment without hand cards", () => {
   assert.equal(state.skipPlayPhaseForCurrentTurn, true);
 });
 
+test("ai guicai should not worsen an already favorable indulgence judgment", () => {
+  const state = createInitialGame(42);
+  const judged = state.players[2];
+  const guicaiOwner = state.players[3];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, guicaiOwner.id, STANDARD_SKILL_IDS.simayiGuicai);
+
+  state.currentPlayerId = judged.id;
+  state.phase = "judge";
+  judged.judgmentZone.delayedTricks = [{ id: "indulgence-guicai-safe-1", kind: "indulgence", suit: "spade", point: 3 }];
+  guicaiOwner.hand = [{ id: "guicai-safe-black-1", kind: "slash", suit: "club", point: 8 }];
+  state.deck = [{ id: "judge-heart-already-good-1", kind: "dodge", suit: "heart", point: 6 }];
+
+  stepPhase(state);
+
+  assert.equal(state.skipPlayPhaseForCurrentTurn, false);
+  assert.equal(guicaiOwner.hand.length, 1);
+  assert.equal(state.discard.some((card) => card.id === "guicai-safe-black-1"), false);
+});
+
+test("ai guicai should choose a suitable replacement card instead of first hand card", () => {
+  const state = createInitialGame(42);
+  const judged = state.players[2];
+  const guicaiOwner = state.players[3];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, guicaiOwner.id, STANDARD_SKILL_IDS.simayiGuicai);
+
+  state.currentPlayerId = judged.id;
+  state.phase = "judge";
+  judged.judgmentZone.delayedTricks = [{ id: "indulgence-guicai-pick-1", kind: "indulgence", suit: "spade", point: 4 }];
+  guicaiOwner.hand = [
+    { id: "guicai-pick-black-first-1", kind: "slash", suit: "club", point: 10 },
+    { id: "guicai-pick-heart-second-1", kind: "peach", suit: "heart", point: 9 }
+  ];
+  state.deck = [{ id: "judge-black-before-pick-1", kind: "dodge", suit: "spade", point: 2 }];
+
+  stepPhase(state);
+
+  assert.equal(state.skipPlayPhaseForCurrentTurn, false);
+  assert.ok(state.discard.some((card) => card.id === "guicai-pick-heart-second-1"));
+  assert.ok(guicaiOwner.hand.some((card) => card.id === "guicai-pick-black-first-1"));
+});
+
 /**
  * 验证郭嘉【天妒】可在判定后获得生效判定牌。
  */
@@ -2908,6 +3108,31 @@ test("tiandu skill should gain judgment card", () => {
 
   assert.ok(target.hand.some((card) => card.id === "judge-tiandu-1"));
   assert.equal(state.discard.some((card) => card.id === "judge-tiandu-1"), false);
+});
+
+test("tiandu should gain final replaced judgment card after guicai", () => {
+  const state = createInitialGame(42);
+  const judged = state.players[2];
+  const guicaiOwner = state.players[3];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, judged.id, STANDARD_SKILL_IDS.guojiaTiandu);
+  assignSkillToPlayer(state, guicaiOwner.id, STANDARD_SKILL_IDS.simayiGuicai);
+
+  state.currentPlayerId = judged.id;
+  state.phase = "judge";
+  judged.judgmentZone.delayedTricks = [{ id: "indulgence-tiandu-guicai-1", kind: "indulgence", suit: "club", point: 3 }];
+  guicaiOwner.hand = [{ id: "tiandu-guicai-heart-replace-1", kind: "peach", suit: "heart", point: 7 }];
+  state.deck = [{ id: "tiandu-guicai-origin-black-1", kind: "slash", suit: "spade", point: 5 }];
+
+  stepPhase(state);
+
+  assert.ok(judged.hand.some((card) => card.id === "tiandu-guicai-heart-replace-1"));
+  assert.equal(judged.hand.some((card) => card.id === "tiandu-guicai-origin-black-1"), false);
+  assert.ok(state.discard.some((card) => card.id === "tiandu-guicai-origin-black-1"));
 });
 
 /**
@@ -3472,6 +3697,46 @@ test("spear should allow virtual slash response for barbarian", () => {
 
   assert.equal(target.hp, hpBefore);
   assert.equal(target.hand.length, 0);
+});
+
+/**
+ * 验证南蛮响应中可指定丈八蛇矛的两张代价牌。
+ */
+test("spear response should consume selected two hand cards", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[2];
+  const target = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "barbarian-spear-select-1", kind: "barbarian", suit: "spade", point: 7 }];
+  target.equipment.weapon = { id: "spear-select-weapon-1", kind: "weapon_spear", suit: "spade", point: 12 };
+  target.hand = [
+    { id: "spear-rsp-choose-a", kind: "dodge", suit: "diamond", point: 4 },
+    { id: "spear-rsp-keep", kind: "slash", suit: "spade", point: 6 },
+    { id: "spear-rsp-choose-b", kind: "peach", suit: "heart", point: 5 }
+  ];
+
+  queueResponseDecision(state, target.id, "slash", true);
+  queueResponseCardChoice(state, target.id, "slash", "spear-rsp-choose-a,spear-rsp-choose-b");
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "barbarian-spear-select-1"
+  });
+
+  assert.equal(target.hp, hpBefore);
+  assert.equal(target.hand.some((card) => card.id === "spear-rsp-keep"), true);
+  assert.equal(target.hand.some((card) => card.id === "spear-rsp-choose-a"), false);
+  assert.equal(target.hand.some((card) => card.id === "spear-rsp-choose-b"), false);
+  assert.equal(state.discard.some((card) => card.id === "spear-rsp-choose-a"), true);
+  assert.equal(state.discard.some((card) => card.id === "spear-rsp-choose-b"), true);
 });
 
 /**
@@ -5264,6 +5529,51 @@ test("liuli skill should not redirect to target outside liuli owner's attack ran
   assert.ok(state.events.every((event) => !event.message.includes(`将杀转移给 ${farTarget.name}`)));
 });
 
+test("liuli should redirect before tieqi judgment and tieqi should apply on redirected target", () => {
+  const state = createInitialGame(42);
+  const machao = state.players[0];
+  const daqiao = state.players[1];
+  const diaochan = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, machao.id, STANDARD_SKILL_IDS.machaoTieqi);
+  assignSkillToPlayer(state, daqiao.id, STANDARD_SKILL_IDS.daqiaoLiuli);
+
+  state.currentPlayerId = machao.id;
+  state.phase = "play";
+  machao.equipment.weapon = { id: "tieqi-liuli-weapon-1", kind: "weapon_blade", suit: "spade", point: 5 };
+  machao.hand = [{ id: "tieqi-liuli-slash-1", kind: "slash", suit: "club", point: 7 }];
+  daqiao.hand = [{ id: "tieqi-liuli-discard-1", kind: "lightning", suit: "heart", point: 12 }];
+  diaochan.hand = [{ id: "tieqi-liuli-dodge-1", kind: "dodge", suit: "diamond", point: 9 }];
+  state.deck = [{ id: "tieqi-liuli-judge-red-1", kind: "duel", suit: "diamond", point: 1 }];
+
+  const daqiaoHpBefore = daqiao.hp;
+  const diaochanHpBefore = diaochan.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: machao.id,
+    cardId: "tieqi-liuli-slash-1",
+    targetId: daqiao.id
+  });
+
+  assert.equal(daqiao.hp, daqiaoHpBefore);
+  assert.equal(diaochan.hp, diaochanHpBefore - 1);
+  assert.equal(diaochan.hand.length, 1);
+
+  const liuliEventIndex = state.events.findIndex(
+    (event) => event.type === "skill" && event.message.includes("发动流离") && event.message.includes("转移给")
+  );
+  const tieqiEventIndex = state.events.findIndex(
+    (event) => event.type === "skill" && event.message.includes("发动铁骑") && event.message.includes("不能使用闪")
+  );
+
+  assert.ok(liuliEventIndex >= 0);
+  assert.ok(tieqiEventIndex > liuliEventIndex);
+});
+
 /**
  * 验证甘宁【奇袭】可将黑色手牌当【过河拆桥】使用。
  */
@@ -5859,6 +6169,37 @@ test("jianxiong should not trigger when owner dies before rescue", () => {
   assert.equal(state.events.some((event) => event.type === "skill" && event.message.includes("奸雄")), false);
 });
 
+test("jianxiong should gain both spear source cards on virtual spear slash damage", () => {
+  const state = createInitialGame(42);
+  const source = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, target.id, STANDARD_SKILL_IDS.caocaoJianxiong);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.equipment.weapon = { id: "jianxiong-spear-weapon-1", kind: "weapon_spear", suit: "spade", point: 12 };
+  source.hand = [
+    { id: "jianxiong-spear-sub-1", kind: "dodge", suit: "club", point: 3 },
+    { id: "jianxiong-spear-sub-2", kind: "peach", suit: "heart", point: 4 }
+  ];
+  target.hand = [];
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "__virtual_spear_slash__",
+    targetId: target.id
+  });
+
+  assert.equal(target.hand.some((card) => card.id === "jianxiong-spear-sub-1"), true);
+  assert.equal(target.hand.some((card) => card.id === "jianxiong-spear-sub-2"), true);
+  assert.equal(target.hand.some((card) => card.id.startsWith("__virtual_spear_slash__")), false);
+});
+
 /**
  * 验证曹操【护驾】可由魏势力角色提供【闪】响应【杀】。
  */
@@ -5974,6 +6315,71 @@ test("hujia should not request dodge from non-wei responders", () => {
 
   assert.equal(lord.hp, lordHpBefore - 1);
   assert.equal(nonWei.hand.length, 1);
+});
+
+test("hujia should satisfy wushuang two-dodge requirement with ally plus lord dodge", () => {
+  const state = createInitialGame(42);
+  const lvbu = state.players[1];
+  const lord = state.players[0];
+  const weiAlly = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, lvbu.id, STANDARD_SKILL_IDS.lvbuWushuang);
+  assignSkillToPlayer(state, lord.id, STANDARD_SKILL_IDS.caocaoHujia);
+  assignSkillToPlayer(state, weiAlly.id, STANDARD_SKILL_IDS.zhangliaoTuxi);
+
+  state.currentPlayerId = lvbu.id;
+  state.phase = "play";
+  lvbu.hand = [{ id: "hujia-wushuang-slash-1", kind: "slash", suit: "spade", point: 8 }];
+  lord.hand = [{ id: "hujia-wushuang-lord-dodge-1", kind: "dodge", suit: "heart", point: 4 }];
+  weiAlly.hand = [{ id: "hujia-wushuang-ally-dodge-1", kind: "dodge", suit: "diamond", point: 9 }];
+
+  const hpBefore = lord.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: lvbu.id,
+    cardId: "hujia-wushuang-slash-1",
+    targetId: lord.id
+  });
+
+  assert.equal(lord.hp, hpBefore);
+  assert.ok(state.discard.some((card) => card.id === "hujia-wushuang-ally-dodge-1"));
+  assert.ok(state.discard.some((card) => card.id === "hujia-wushuang-lord-dodge-1"));
+});
+
+test("hujia should fail wushuang response when total dodges are insufficient", () => {
+  const state = createInitialGame(42);
+  const lvbu = state.players[1];
+  const lord = state.players[0];
+  const weiAlly = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, lvbu.id, STANDARD_SKILL_IDS.lvbuWushuang);
+  assignSkillToPlayer(state, lord.id, STANDARD_SKILL_IDS.caocaoHujia);
+  assignSkillToPlayer(state, weiAlly.id, STANDARD_SKILL_IDS.zhangliaoTuxi);
+
+  state.currentPlayerId = lvbu.id;
+  state.phase = "play";
+  lvbu.hand = [{ id: "hujia-wushuang-slash-2", kind: "slash", suit: "spade", point: 11 }];
+  lord.hand = [];
+  weiAlly.hand = [{ id: "hujia-wushuang-ally-dodge-2", kind: "dodge", suit: "heart", point: 5 }];
+
+  const hpBefore = lord.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: lvbu.id,
+    cardId: "hujia-wushuang-slash-2",
+    targetId: lord.id
+  });
+
+  assert.equal(lord.hp, hpBefore - 1);
+  assert.ok(state.discard.some((card) => card.id === "hujia-wushuang-ally-dodge-2"));
 });
 
 /**
