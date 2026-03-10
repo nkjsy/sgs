@@ -10,6 +10,7 @@ import {
   queueResponseDecision,
   resolvePendingAxeStrike,
   resolvePendingFankui,
+  resolvePendingGanglie,
   resolvePendingCollateral,
   resolvePendingDuelResponse,
   resolvePendingIceSword,
@@ -1122,6 +1123,9 @@ test("lightning should be nullifiable before damage judgment", () => {
     player.hand = [];
   }
 
+  target.identity = "lord";
+  ally.identity = "loyalist";
+
   state.currentPlayerId = target.id;
   state.phase = "judge";
   target.judgmentZone.delayedTricks = [{ id: "lightning-3", kind: "lightning" }];
@@ -1134,6 +1138,32 @@ test("lightning should be nullifiable before damage judgment", () => {
   assert.equal(target.hp, hpBefore);
   assert.ok(state.discard.some((card) => card.id === "lightning-3"));
   assert.ok(state.discard.some((card) => card.id === "nullify-l-1"));
+});
+
+test("delayed trick should not auto-consume human nullify when preference is disabled", () => {
+  const state = createInitialGame(42);
+  const target = state.players[0];
+  const human = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  target.identity = "lord";
+  human.identity = "loyalist";
+  state.currentPlayerId = target.id;
+  state.phase = "judge";
+  target.judgmentZone.delayedTricks = [{ id: "indulgence-human-no-auto-1", kind: "indulgence", suit: "spade", point: 3 }];
+  human.hand = [{ id: "nullify-human-no-auto-1", kind: "nullify", suit: "heart", point: 7 }];
+  state.deck = [{ id: "indulgence-human-no-auto-judge-1", kind: "slash", suit: "club", point: 6 }];
+
+  setResponsePreference(state, human.id, "nullify", false);
+
+  stepPhase(state);
+
+  assert.equal(target.hand.some((card) => card.id === "nullify-human-no-auto-1"), false);
+  assert.equal(human.hand.some((card) => card.id === "nullify-human-no-auto-1"), true);
+  assert.equal(state.skipPlayPhaseForCurrentTurn, true);
 });
 
 /**
@@ -2354,9 +2384,9 @@ test("yiji should not trigger when owner dies before rescue", () => {
 });
 
 /**
- * 验证 AI 郭嘉【遗计】会将本次摸到的牌分配给身份同阵营角色。
+ * 验证忠臣 AI 郭嘉【遗计】会优先分配给公开可识别的主公。
  */
-test("yiji skill should distribute drawn cards to identity-camp ally for ai owner", () => {
+test("yiji skill should distribute drawn cards to public lord ally for loyalist ai owner", () => {
   const state = createInitialGame(42);
   const actor = state.players[2];
   const target = state.players[1];
@@ -2387,6 +2417,40 @@ test("yiji skill should distribute drawn cards to identity-camp ally for ai owne
   assert.equal(target.hand.length, 0);
   assert.ok(ally.hand.some((card) => card.id === "yiji-ai-draw-1"));
   assert.ok(ally.hand.some((card) => card.id === "yiji-ai-draw-2"));
+});
+
+test("yiji lord ai should not distribute to hidden non-lord on first-round with no evidence", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[1];
+  const target = state.players[0];
+  const hiddenNonLord = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, target.id, STANDARD_SKILL_IDS.guojiaYiji);
+  target.isAi = true;
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "slash-yiji-lord-ai-1", kind: "slash", suit: "spade", point: 8 }];
+  state.deck = [
+    { id: "yiji-lord-ai-draw-1", kind: "dodge", suit: "heart", point: 2 },
+    { id: "yiji-lord-ai-draw-2", kind: "peach", suit: "diamond", point: 7 }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-yiji-lord-ai-1",
+    targetId: target.id
+  });
+
+  assert.ok(target.hand.some((card) => card.id === "yiji-lord-ai-draw-1"));
+  assert.ok(target.hand.some((card) => card.id === "yiji-lord-ai-draw-2"));
+  assert.equal(hiddenNonLord.hand.some((card) => card.id === "yiji-lord-ai-draw-1"), false);
+  assert.equal(hiddenNonLord.hand.some((card) => card.id === "yiji-lord-ai-draw-2"), false);
 });
 
 /**
@@ -2817,7 +2881,7 @@ test("fankui should trigger once when taking 2 damage in one event", () => {
   assert.equal(source.hand.length, 1);
 });
 
-test("ai guicai should not worsen allied ganglie when judgment is already successful", () => {
+test("ai guicai should not protect hidden ally ganglie without public camp info", () => {
   const state = createInitialGame(42);
   const source = state.players[1];
   const ganglieOwner = state.players[2];
@@ -2847,9 +2911,9 @@ test("ai guicai should not worsen allied ganglie when judgment is already succes
     targetId: ganglieOwner.id
   });
 
-  assert.equal(source.hand.length, 0);
-  assert.equal(guicaiOwner.hand.length, 1);
-  assert.equal(state.discard.some((card) => card.id === "ganglie-guicai-safe-heart-1"), false);
+  assert.equal(source.hand.length, 2);
+  assert.equal(guicaiOwner.hand.length, 0);
+  assert.equal(state.discard.some((card) => card.id === "ganglie-guicai-safe-heart-1"), true);
 });
 
 test("ai guicai should sabotage enemy ganglie by replacing to heart", () => {
@@ -3035,7 +3099,7 @@ test("guicai skill should not replace judgment without hand cards", () => {
   assert.equal(state.skipPlayPhaseForCurrentTurn, true);
 });
 
-test("ai guicai should not worsen an already favorable indulgence judgment", () => {
+test("ai guicai may disrupt hidden target indulgence outcome under public-info policy", () => {
   const state = createInitialGame(42);
   const judged = state.players[2];
   const guicaiOwner = state.players[3];
@@ -3054,12 +3118,12 @@ test("ai guicai should not worsen an already favorable indulgence judgment", () 
 
   stepPhase(state);
 
-  assert.equal(state.skipPlayPhaseForCurrentTurn, false);
-  assert.equal(guicaiOwner.hand.length, 1);
-  assert.equal(state.discard.some((card) => card.id === "guicai-safe-black-1"), false);
+  assert.equal(state.skipPlayPhaseForCurrentTurn, true);
+  assert.equal(guicaiOwner.hand.length, 0);
+  assert.equal(state.discard.some((card) => card.id === "guicai-safe-black-1"), true);
 });
 
-test("ai guicai should choose a suitable replacement card instead of first hand card", () => {
+test("ai guicai should avoid unnecessary replacement under hidden-camp uncertainty", () => {
   const state = createInitialGame(42);
   const judged = state.players[2];
   const guicaiOwner = state.players[3];
@@ -3081,9 +3145,10 @@ test("ai guicai should choose a suitable replacement card instead of first hand 
 
   stepPhase(state);
 
-  assert.equal(state.skipPlayPhaseForCurrentTurn, false);
-  assert.ok(state.discard.some((card) => card.id === "guicai-pick-heart-second-1"));
+  assert.equal(state.skipPlayPhaseForCurrentTurn, true);
+  assert.equal(state.discard.some((card) => card.id === "guicai-pick-heart-second-1"), false);
   assert.ok(guicaiOwner.hand.some((card) => card.id === "guicai-pick-black-first-1"));
+  assert.ok(guicaiOwner.hand.some((card) => card.id === "guicai-pick-heart-second-1"));
 });
 
 /**
@@ -3130,9 +3195,9 @@ test("tiandu should gain final replaced judgment card after guicai", () => {
 
   stepPhase(state);
 
-  assert.ok(judged.hand.some((card) => card.id === "tiandu-guicai-heart-replace-1"));
-  assert.equal(judged.hand.some((card) => card.id === "tiandu-guicai-origin-black-1"), false);
-  assert.ok(state.discard.some((card) => card.id === "tiandu-guicai-origin-black-1"));
+  assert.equal(judged.hand.some((card) => card.id === "tiandu-guicai-heart-replace-1"), false);
+  assert.equal(judged.hand.some((card) => card.id === "tiandu-guicai-origin-black-1"), true);
+  assert.equal(state.discard.some((card) => card.id === "tiandu-guicai-origin-black-1"), false);
 });
 
 /**
@@ -3187,9 +3252,50 @@ test("ganglie skill should force source to discard two cards on non-heart judgme
     targetId: owner.id
   });
 
+  assert.ok(state.pendingGanglie);
+  resolvePendingGanglie(state, true, ["src-discard-ganglie-2", "src-discard-ganglie-1"]);
+
+  assert.equal(state.pendingGanglie, null);
   assert.equal(source.hand.length, 0);
   assert.ok(state.discard.some((card) => card.id === "src-discard-ganglie-1"));
   assert.ok(state.discard.some((card) => card.id === "src-discard-ganglie-2"));
+});
+
+test("ganglie should allow source to choose taking damage instead of discarding two cards", () => {
+  const state = createInitialGame(42);
+  const source = state.players[0];
+  const owner = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, owner.id, STANDARD_SKILL_IDS.xiahoudunGanglie);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.hand = [
+    { id: "slash-ganglie-choice-1", kind: "slash", suit: "spade", point: 8 },
+    { id: "src-ganglie-choice-keep-1", kind: "dodge", suit: "club", point: 6 },
+    { id: "src-ganglie-choice-keep-2", kind: "peach", suit: "diamond", point: 12 }
+  ];
+  state.deck = [{ id: "ganglie-choice-judge-black-1", kind: "slash", suit: "club", point: 4 }];
+
+  const hpBefore = source.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "slash-ganglie-choice-1",
+    targetId: owner.id
+  });
+
+  assert.ok(state.pendingGanglie);
+  resolvePendingGanglie(state, false);
+
+  assert.equal(state.pendingGanglie, null);
+  assert.equal(source.hp, hpBefore - 1);
+  assert.equal(source.hand.some((card) => card.id === "src-ganglie-choice-keep-1"), true);
+  assert.equal(source.hand.some((card) => card.id === "src-ganglie-choice-keep-2"), true);
 });
 
 /**
@@ -4486,7 +4592,7 @@ test("ai tuxi should not target same-camp lord-side ally", () => {
   assert.equal(lord.hand.some((card) => card.id === "tuxi-lord-side-ally-1"), true);
 });
 
-test("ai tuxi should not target same-camp rebel ally", () => {
+test("ai tuxi should only avoid publicly known allies", () => {
   const state = createInitialGame(42);
   const actor = state.players[2];
   const rebelAlly = state.players[3];
@@ -4509,10 +4615,40 @@ test("ai tuxi should not target same-camp rebel ally", () => {
 
   stepPhase(state);
 
-  assert.equal(actor.hand.some((card) => card.id === "tuxi-rebel-ally-1"), false);
+  assert.equal(actor.hand.some((card) => card.id === "tuxi-rebel-ally-1"), true);
   assert.ok(actor.hand.some((card) => card.id === "tuxi-lord-target-1"));
-  assert.ok(actor.hand.some((card) => card.id === "tuxi-rebel-safe-draw-1"));
-  assert.equal(rebelAlly.hand.some((card) => card.id === "tuxi-rebel-ally-1"), true);
+  assert.equal(actor.hand.some((card) => card.id === "tuxi-rebel-safe-draw-1"), false);
+  assert.equal(rebelAlly.hand.some((card) => card.id === "tuxi-rebel-ally-1"), false);
+});
+
+test("ai tuxi should avoid event-inferred ally target", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[2];
+  const inferredAlly = state.players[3];
+  const hostile = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.zhangliaoTuxi);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "draw";
+  inferredAlly.hand = [{ id: "tuxi-infer-ally-1", kind: "dodge", suit: "heart", point: 4 }];
+  hostile.hand = [{ id: "tuxi-infer-hostile-1", kind: "slash", suit: "spade", point: 8 }];
+  state.deck = [
+    { id: "tuxi-infer-safe-draw-1", kind: "peach", suit: "diamond", point: 6 },
+    { id: "tuxi-infer-safe-draw-2", kind: "nullify", suit: "club", point: 10 }
+  ];
+  state.events.push({ type: "rescue", message: `${inferredAlly.name} 使用桃救回 ${actor.name}` });
+
+  stepPhase(state);
+
+  assert.equal(actor.hand.some((card) => card.id === "tuxi-infer-ally-1"), false);
+  assert.ok(actor.hand.some((card) => card.id === "tuxi-infer-hostile-1"));
+  assert.ok(actor.hand.some((card) => card.id === "tuxi-infer-safe-draw-1"));
+  assert.equal(inferredAlly.hand.some((card) => card.id === "tuxi-infer-ally-1"), true);
 });
 
 /**
@@ -5362,6 +5498,42 @@ test("jieyin skill should be once per turn", () => {
     (action) => action.type === "play-card" && action.cardId === "__virtual_jieyin__"
   );
   assert.equal(secondJieyinStillLegal, false);
+});
+
+test("jieyin should consume selected two hand cards", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[1];
+  const target = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.sunshangxiangJieyin);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hp = 3;
+  actor.maxHp = 4;
+  target.hp = 3;
+  target.maxHp = 5;
+  actor.hand = [
+    { id: "jieyin-pick-1", kind: "dodge", suit: "heart", point: 2 },
+    { id: "jieyin-pick-2", kind: "slash", suit: "spade", point: 11 },
+    { id: "jieyin-pick-3", kind: "duel", suit: "club", point: 5 }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "__virtual_jieyin__::jieyin-pick-1,jieyin-pick-3",
+    targetId: target.id
+  });
+
+  assert.equal(actor.hand.length, 1);
+  assert.equal(actor.hand[0]?.id, "jieyin-pick-2");
+  assert.ok(state.discard.some((card) => card.id === "jieyin-pick-1"));
+  assert.ok(state.discard.some((card) => card.id === "jieyin-pick-3"));
 });
 
 /**
@@ -6564,10 +6736,39 @@ test("dying rescue should require multiple peaches when hp is below zero", () =>
     targetId: target.id
   });
 
+  assert.equal(target.alive, false);
+  assert.ok(state.discard.some((card) => card.id === "deep-dying-peach-self"));
+  assert.equal(state.discard.some((card) => card.id === "deep-dying-peach-ally"), false);
+});
+
+test("ai rescuer should use peach for event-inferred ally in dying flow", () => {
+  const state = createInitialGame(42);
+  const source = state.players[0];
+  const target = state.players[1];
+  const rescuer = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.equipment.weapon = { id: "infer-rescue-weapon-1", kind: "weapon_qinggang_sword", suit: "spade", point: 2 };
+  source.hand = [{ id: "infer-rescue-slash-1", kind: "slash", suit: "spade", point: 9 }];
+  target.hp = 1;
+  rescuer.hand = [{ id: "infer-rescue-peach-1", kind: "peach", suit: "heart", point: 7 }];
+  state.events.push({ type: "rescue", message: `${target.name} 使用桃救回 ${rescuer.name}` });
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "infer-rescue-slash-1",
+    targetId: target.id
+  });
+
   assert.equal(target.alive, true);
   assert.equal(target.hp, 1);
-  assert.ok(state.discard.some((card) => card.id === "deep-dying-peach-self"));
-  assert.ok(state.discard.some((card) => card.id === "deep-dying-peach-ally"));
+  assert.ok(state.discard.some((card) => card.id === "infer-rescue-peach-1"));
 });
 
 /**
@@ -6812,4 +7013,35 @@ test("jijiu skill should allow red card as peach outside own turn", () => {
 
   assert.equal(target.hp, 1);
   assert.ok(state.discard.some((card) => card.id === "jijiu-red-1"));
+});
+
+test("jijiu skill should allow red equipment as peach outside own turn", () => {
+  const state = createInitialGame(42);
+  const source = state.players[2];
+  const target = state.players[0];
+  const rescuer = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, rescuer.id, STANDARD_SKILL_IDS.huatuoJijiu);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.equipment.weapon = { id: "jijiu-equip-source-weapon-1", kind: "weapon_qinggang_sword", suit: "spade", point: 6 };
+  source.hand = [{ id: "jijiu-equip-slash-1", kind: "slash", suit: "spade", point: 9 }];
+  target.hp = 1;
+  rescuer.equipment.armor = { id: "jijiu-red-armor-1", kind: "armor_eight_diagram", suit: "heart", point: 2 };
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "jijiu-equip-slash-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, 1);
+  assert.equal(rescuer.equipment.armor, null);
+  assert.ok(state.discard.some((card) => card.id === "jijiu-red-armor-1"));
 });

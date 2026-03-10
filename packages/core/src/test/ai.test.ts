@@ -290,9 +290,9 @@ test("loyalist ai should not attack the lord on opening action", () => {
 });
 
 /**
- * 验证主公在无行为证据时可主动攻击未知身份目标（可能误伤忠臣）。
+ * 验证主公在无行为证据时不会主动攻击未知身份目标，避免开局误伤忠臣。
  */
-test("lord ai may attack unknown target without evidence", () => {
+test("lord ai should avoid attacking unknown target without evidence", () => {
   const state = createInitialGame(42);
   const lord = state.players[0];
 
@@ -307,9 +307,66 @@ test("lord ai may attack unknown target without evidence", () => {
 
   const action = chooseAiAction(createAiDecisionContext(state, lord.id));
 
-  assert.equal(action.type, "play-card");
-  assert.equal(action.cardId, "ai-lord-slash-unknown-1");
-  assert.notEqual(action.targetId, lord.id);
+  assert.equal(action.type, "end-play-phase");
+});
+
+test("lord ai decision should be invariant to hidden identity permutation without evidence", () => {
+  const base = createInitialGame(42);
+  const permuted = createInitialGame(42);
+
+  for (const player of base.players) {
+    player.hand = [];
+  }
+  for (const player of permuted.players) {
+    player.hand = [];
+  }
+
+  base.currentPlayerId = base.players[0].id;
+  base.phase = "play";
+  base.players[0].hand = [{ id: "ai-lord-invariant-slash-1", kind: "slash", suit: "spade", point: 8 }];
+
+  permuted.currentPlayerId = permuted.players[0].id;
+  permuted.phase = "play";
+  permuted.players[0].hand = [{ id: "ai-lord-invariant-slash-1", kind: "slash", suit: "spade", point: 8 }];
+
+  permuted.players[1].identity = "rebel";
+  permuted.players[2].identity = "loyalist";
+  permuted.players[3].identity = "renegade";
+  permuted.players[4].identity = "rebel";
+
+  const baseAction = chooseAiAction(createAiDecisionContext(base, base.players[0].id));
+  const permutedAction = chooseAiAction(createAiDecisionContext(permuted, permuted.players[0].id));
+
+  assert.deepEqual(baseAction, permutedAction);
+  assert.equal(baseAction.type, "end-play-phase");
+});
+
+test("lord ai opening should not target loyalist under randomized identities without hostile evidence", () => {
+  const state = createInitialGame(42);
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.players[0].identity = "rebel";
+  state.players[1].identity = "lord";
+  state.players[2].identity = "renegade";
+  state.players[3].identity = "rebel";
+  state.players[4].identity = "loyalist";
+
+  const lord = state.players.find((player) => player.identity === "lord");
+  assert.ok(lord);
+
+  state.currentPlayerId = lord.id;
+  state.phase = "play";
+  lord.hand = [{ id: "ai-lord-random-slash-1", kind: "slash", suit: "club", point: 9 }];
+
+  const action = chooseAiAction(createAiDecisionContext(state, lord.id));
+
+  if (action.type === "play-card" && action.targetId) {
+    const target = state.players.find((player) => player.id === action.targetId);
+    assert.notEqual(target?.identity, "loyalist");
+  }
 });
 
 /**

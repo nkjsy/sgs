@@ -1,5 +1,11 @@
 import { Card, CardKind, GameEvent, GameState, Identity, PlayerState, PlayCardAction, TurnAction } from "./types";
 import { getLegalActions } from "./engine";
+import {
+  buildPublicEventPatterns,
+  computeEventRecencyWeight,
+  extractPublicInteractionMatch,
+  inferPublicRelationScoreFromEvents
+} from "./relation-inference";
 
 const VIRTUAL_SPEAR_SLASH_CARD_ID = "__virtual_spear_slash__";
 const VIRTUAL_WUSHENG_SLASH_CARD_ID_PREFIX = "__virtual_wusheng_slash__::";
@@ -664,7 +670,7 @@ function shouldAttackPlayer(context: AiDecisionContext, perception: AiPerception
       return true;
     }
 
-    return relation >= 0;
+    return relation > 0;
   }
 
   if (context.actor.identity === "loyalist") {
@@ -808,7 +814,7 @@ function buildAiPerception(context: AiDecisionContext): AiPerception {
   const lord = context.state.players.find((player) => player.identity === "lord");
 
   for (const player of context.state.players) {
-    relationByPlayerId[player.id] = 0;
+    relationByPlayerId[player.id] = inferPublicRelationScoreFromEvents(context.state.events, context.actor, player);
     inferredCampByPlayerId[player.id] = "unknown";
   }
 
@@ -822,91 +828,43 @@ function buildAiPerception(context: AiDecisionContext): AiPerception {
   }
 
   const actorCamp = getActorCamp(context.actor.identity);
-  const namePattern = context.state.players
-    .map((player) => escapeRegExp(player.name))
-    .sort((left, right) => right.length - left.length)
-    .join("|");
-  if (!namePattern) {
+  const patterns = buildPublicEventPatterns(context.state.players.map((player) => player.name));
+  if (!patterns) {
     return { relationByPlayerId, inferredCampByPlayerId };
   }
-
-  const hostilePattern = new RegExp(
-    `(${namePattern}) 对 (${namePattern}) 使用(?:杀|决斗|过河拆桥|顺手牵羊|乐不思蜀|借刀杀人|南蛮入侵|万箭齐发)`
-  );
-  const damagePattern = new RegExp(`(${namePattern}) 对 (${namePattern}) 造成 \\d+ 点伤害`);
-  const rescuePattern = new RegExp(`(${namePattern}) 使用桃救回 (${namePattern})`);
-  const healPattern = new RegExp(`(${namePattern}) 发动(?:青囊|结姻).*?(?:令|与) (${namePattern}) .*回复`);
 
   for (let index = 0; index < context.state.events.length; index += 1) {
     const event = context.state.events[index];
     const recencyWeight = computeEventRecencyWeight(context.state.events.length, index);
 
-    const hostileMatch = event.message.match(hostilePattern);
-    if (hostileMatch) {
-      const source = findPlayerByName(context, hostileMatch[1]);
-      const target = findPlayerByName(context, hostileMatch[2]);
-      if (source && target) {
-        applyHostileEvidence(
-          context,
-          relationByPlayerId,
-          inferredCampByPlayerId,
-          actorCamp,
-          source.id,
-          target.id,
-          1.5 * recencyWeight
-        );
-      }
+    const interaction = extractPublicInteractionMatch(event.message, patterns);
+    if (!interaction) {
+      continue;
     }
 
-    const damageMatch = event.message.match(damagePattern);
-    if (damageMatch) {
-      const source = findPlayerByName(context, damageMatch[1]);
-      const target = findPlayerByName(context, damageMatch[2]);
-      if (source && target) {
-        applyHostileEvidence(
-          context,
-          relationByPlayerId,
-          inferredCampByPlayerId,
-          actorCamp,
-          source.id,
-          target.id,
-          2.5 * recencyWeight
-        );
-      }
+    const source = findPlayerByName(context, interaction.sourceName);
+    const target = findPlayerByName(context, interaction.targetName);
+    if (!source || !target) {
+      continue;
     }
 
-    const rescueMatch = event.message.match(rescuePattern);
-    if (rescueMatch) {
-      const source = findPlayerByName(context, rescueMatch[1]);
-      const target = findPlayerByName(context, rescueMatch[2]);
-      if (source && target) {
-        applySupportEvidence(
-          context,
-          relationByPlayerId,
-          inferredCampByPlayerId,
-          actorCamp,
-          source.id,
-          target.id,
-          2.5 * recencyWeight
-        );
-      }
+    if (interaction.kind === "hostile") {
+      applyHostileEvidence(context, relationByPlayerId, inferredCampByPlayerId, actorCamp, source.id, target.id, 1.5 * recencyWeight);
+      continue;
     }
 
-    const healMatch = event.message.match(healPattern);
-    if (healMatch) {
-      const source = findPlayerByName(context, healMatch[1]);
-      const target = findPlayerByName(context, healMatch[2]);
-      if (source && target) {
-        applySupportEvidence(
-          context,
-          relationByPlayerId,
-          inferredCampByPlayerId,
-          actorCamp,
-          source.id,
-          target.id,
-          1.5 * recencyWeight
-        );
-      }
+    if (interaction.kind === "damage") {
+      applyHostileEvidence(context, relationByPlayerId, inferredCampByPlayerId, actorCamp, source.id, target.id, 2.5 * recencyWeight);
+      continue;
+    }
+
+    if (interaction.kind === "rescue") {
+      applySupportEvidence(context, relationByPlayerId, inferredCampByPlayerId, actorCamp, source.id, target.id, 2.5 * recencyWeight);
+      continue;
+    }
+
+    if (interaction.kind === "heal") {
+      applySupportEvidence(context, relationByPlayerId, inferredCampByPlayerId, actorCamp, source.id, target.id, 1.5 * recencyWeight);
     }
   }
 
@@ -915,10 +873,7 @@ function buildAiPerception(context: AiDecisionContext): AiPerception {
     relationByPlayerId,
     inferredCampByPlayerId,
     actorCamp,
-    hostilePattern,
-    damagePattern,
-    rescuePattern,
-    healPattern
+    patterns
   );
 
   return { relationByPlayerId, inferredCampByPlayerId };
@@ -929,11 +884,12 @@ function applyRevealedIdentityCorrections(
   relationByPlayerId: Record<string, number>,
   inferredCampByPlayerId: Record<string, "lord-side" | "rebel-side" | "unknown">,
   actorCamp: "lord-side" | "rebel-side" | "renegade",
-  hostilePattern: RegExp,
-  damagePattern: RegExp,
-  rescuePattern: RegExp,
-  healPattern: RegExp
+  patterns: ReturnType<typeof buildPublicEventPatterns>
 ): void {
+  if (!patterns) {
+    return;
+  }
+
   const deadRevealedPlayers = context.state.players.filter((player) => !player.alive);
   for (const dead of deadRevealedPlayers) {
     const deadCamp = getActorCamp(dead.identity);
@@ -948,72 +904,66 @@ function applyRevealedIdentityCorrections(
     const event = context.state.events[index];
     const recencyWeight = computeEventRecencyWeight(context.state.events.length, index);
 
-    const hostileMatch = event.message.match(hostilePattern);
-    if (hostileMatch) {
-      const source = findPlayerByName(context, hostileMatch[1]);
-      const target = findPlayerByName(context, hostileMatch[2]);
-      if (source && target && !source.id.startsWith("__") && !target.alive) {
-        applyRevealedCampEvidenceFromInteraction(
-          relationByPlayerId,
-          inferredCampByPlayerId,
-          actorCamp,
-          source.id,
-          getActorCamp(target.identity),
-          true,
-          recencyWeight
-        );
-      }
+    const interaction = extractPublicInteractionMatch(event.message, patterns);
+    if (!interaction) {
+      continue;
     }
 
-    const damageMatch = event.message.match(damagePattern);
-    if (damageMatch) {
-      const source = findPlayerByName(context, damageMatch[1]);
-      const target = findPlayerByName(context, damageMatch[2]);
-      if (source && target && !source.id.startsWith("__") && !target.alive) {
-        applyRevealedCampEvidenceFromInteraction(
-          relationByPlayerId,
-          inferredCampByPlayerId,
-          actorCamp,
-          source.id,
-          getActorCamp(target.identity),
-          true,
-          1.2 * recencyWeight
-        );
-      }
+    const source = findPlayerByName(context, interaction.sourceName);
+    const target = findPlayerByName(context, interaction.targetName);
+    if (!source || !target || source.id.startsWith("__") || target.alive) {
+      continue;
     }
 
-    const rescueMatch = event.message.match(rescuePattern);
-    if (rescueMatch) {
-      const source = findPlayerByName(context, rescueMatch[1]);
-      const target = findPlayerByName(context, rescueMatch[2]);
-      if (source && target && !source.id.startsWith("__") && !target.alive) {
-        applyRevealedCampEvidenceFromInteraction(
-          relationByPlayerId,
-          inferredCampByPlayerId,
-          actorCamp,
-          source.id,
-          getActorCamp(target.identity),
-          false,
-          recencyWeight
-        );
-      }
+    if (interaction.kind === "hostile") {
+      applyRevealedCampEvidenceFromInteraction(
+        relationByPlayerId,
+        inferredCampByPlayerId,
+        actorCamp,
+        source.id,
+        getActorCamp(target.identity),
+        true,
+        recencyWeight
+      );
+      continue;
     }
 
-    const healMatch = event.message.match(healPattern);
-    if (healMatch) {
-      const source = findPlayerByName(context, healMatch[1]);
-      const target = findPlayerByName(context, healMatch[2]);
-      if (source && target && !source.id.startsWith("__") && !target.alive) {
-        applyRevealedCampEvidenceFromInteraction(
-          relationByPlayerId,
-          inferredCampByPlayerId,
-          actorCamp,
-          source.id,
-          getActorCamp(target.identity),
-          false,
-          0.8 * recencyWeight
-        );
-      }
+    if (interaction.kind === "damage") {
+      applyRevealedCampEvidenceFromInteraction(
+        relationByPlayerId,
+        inferredCampByPlayerId,
+        actorCamp,
+        source.id,
+        getActorCamp(target.identity),
+        true,
+        1.2 * recencyWeight
+      );
+      continue;
+    }
+
+    if (interaction.kind === "rescue") {
+      applyRevealedCampEvidenceFromInteraction(
+        relationByPlayerId,
+        inferredCampByPlayerId,
+        actorCamp,
+        source.id,
+        getActorCamp(target.identity),
+        false,
+        recencyWeight
+      );
+      continue;
+    }
+
+    if (interaction.kind === "heal") {
+      applyRevealedCampEvidenceFromInteraction(
+        relationByPlayerId,
+        inferredCampByPlayerId,
+        actorCamp,
+        source.id,
+        getActorCamp(target.identity),
+        false,
+        0.8 * recencyWeight
+      );
     }
   }
 }
@@ -1031,7 +981,7 @@ function applyRevealedCampEvidenceFromInteraction(
     return;
   }
 
-  const inferredSourceCamp = hostile ? oppositeCamp(targetCamp) : targetCamp;
+  const inferredSourceCamp = hostile ? (targetCamp === "lord-side" ? "rebel-side" : "lord-side") : targetCamp;
   inferredCampByPlayerId[sourceId] = inferredSourceCamp;
 
   if (actorCamp === "renegade") {
@@ -1043,9 +993,6 @@ function applyRevealedCampEvidenceFromInteraction(
   relationByPlayerId[sourceId] = (relationByPlayerId[sourceId] ?? 0) + delta;
 }
 
-function oppositeCamp(camp: "lord-side" | "rebel-side"): "lord-side" | "rebel-side" {
-  return camp === "lord-side" ? "rebel-side" : "lord-side";
-}
 
 function applyHostileEvidence(
   context: AiDecisionContext,
@@ -1152,15 +1099,3 @@ function getActorCamp(identity: Identity): "lord-side" | "rebel-side" | "renegad
   return "renegade";
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function computeEventRecencyWeight(total: number, index: number): number {
-  if (total <= 1) {
-    return 1;
-  }
-
-  const ratio = index / (total - 1);
-  return 0.6 + ratio * 0.8;
-}

@@ -37,12 +37,41 @@ const GENERAL_BASE_MAX_HP: Record<string, number> = {
   huatuo: 3
 };
 
+const GENERAL_BASE_GENDER: Record<string, "male" | "female"> = {
+  caocao: "male",
+  zhangfei: "male",
+  machao: "male",
+  simayi: "male",
+  xiahoudun: "male",
+  guojia: "male",
+  zhangliao: "male",
+  xuchu: "male",
+  liubei: "male",
+  zhugeliang: "male",
+  zhouyu: "male",
+  huanggai: "male",
+  lvmeng: "male",
+  sunquan: "male",
+  sunshangxiang: "female",
+  daqiao: "female",
+  ganning: "male",
+  luxun: "male",
+  diaochan: "female",
+  guanyu: "male",
+  lvbu: "male",
+  zhaoyun: "male",
+  huangyueying: "female",
+  zhenji: "female",
+  huatuo: "male"
+};
+
 function applyGeneralHp(slot: ReturnType<typeof createInitialGame>["players"][number], generalId: string): void {
   const baseMaxHp = GENERAL_BASE_MAX_HP[generalId] ?? 4;
   const roleBonus = slot.identity === "lord" ? 1 : 0;
   const finalMaxHp = baseMaxHp + roleBonus;
   slot.maxHp = finalMaxHp;
   slot.hp = finalMaxHp;
+  slot.gender = GENERAL_BASE_GENDER[generalId] ?? slot.gender;
 }
 
 export type SingleRosterMode = "fixed-demo" | "random-general-pool";

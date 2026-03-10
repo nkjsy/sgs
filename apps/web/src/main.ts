@@ -23,6 +23,7 @@ import {
   resolvePendingBladeFollowUp,
   resolvePendingAxeStrike,
   resolvePendingFankui,
+  resolvePendingGanglie,
   resolvePendingCollateral,
   resolvePendingIceSword,
   setBladeFollowUpPromptMode,
@@ -52,6 +53,7 @@ import "./styles.css";
 type Game = ReturnType<typeof createInitialGame>;
 
 const VIRTUAL_KUROU_CARD_ID = "__virtual_kurou__";
+const VIRTUAL_JIEYIN_CARD_ID = "__virtual_jieyin__";
 
 type EventStyle = {
   tag: string;
@@ -72,7 +74,18 @@ type PendingHumanResponse = {
   action: TurnAction;
   previewCardEventMessage?: string;
   allowRespond?: boolean;
-  nullifyTrickKind?: "dismantle" | "snatch" | "duel" | "barbarian" | "archery" | "taoyuan" | "harvest" | "collateral" | "ex_nihilo";
+  nullifyTrickKind?:
+    | "dismantle"
+    | "snatch"
+    | "duel"
+    | "barbarian"
+    | "archery"
+    | "taoyuan"
+    | "harvest"
+    | "collateral"
+    | "ex_nihilo"
+    | "indulgence"
+    | "lightning";
   nullifySourceId?: string;
   nullifyTargetId?: string;
   nullifyChosenDecisions?: boolean[];
@@ -154,6 +167,33 @@ const GENERAL_BASE_MAX_HP: Record<string, number> = {
   huangyueying: 3,
   zhenji: 3,
   huatuo: 3
+};
+const GENERAL_BASE_GENDER: Record<string, PlayerState["gender"]> = {
+  caocao: "male",
+  zhangfei: "male",
+  machao: "male",
+  simayi: "male",
+  xiahoudun: "male",
+  guojia: "male",
+  zhangliao: "male",
+  xuchu: "male",
+  liubei: "male",
+  zhugeliang: "male",
+  zhouyu: "male",
+  huanggai: "male",
+  lvmeng: "male",
+  sunquan: "male",
+  sunshangxiang: "female",
+  daqiao: "female",
+  ganning: "male",
+  luxun: "male",
+  diaochan: "female",
+  guanyu: "male",
+  lvbu: "male",
+  zhaoyun: "male",
+  huangyueying: "female",
+  zhenji: "female",
+  huatuo: "male"
 };
 
 const GENERAL_GENDER: Record<string, PlayerState["gender"]> = {
@@ -538,6 +578,8 @@ let spearComposeMode = false;
 let selectedSpearCostCardIds: string[] = [];
 let selectedSpearResponseCardIds: string[] = [];
 let selectedZhihengCardIds: string[] = [];
+let selectedJieyinCardIds: string[] = [];
+let selectedGanglieDiscardCardIds: string[] = [];
 
 if (!foundApp) {
   showFatalError(new Error("页面缺少 #app 容器节点"));
@@ -667,6 +709,8 @@ function resetUiSelections(): void {
   selectedSpearCostCardIds = [];
   selectedSpearResponseCardIds = [];
   selectedZhihengCardIds = [];
+  selectedJieyinCardIds = [];
+  selectedGanglieDiscardCardIds = [];
 }
 
 function startNewGame(seed = createRuntimeSeed()): void {
@@ -811,6 +855,7 @@ function applyGeneralHp(slot: PlayerState, generalId: string): void {
   const finalMaxHp = baseMaxHp + roleBonus;
   slot.maxHp = finalMaxHp;
   slot.hp = finalMaxHp;
+  slot.gender = GENERAL_BASE_GENDER[generalId] ?? slot.gender;
 }
 
 function getHumanPlayer(state: Game): PlayerState {
@@ -958,6 +1003,17 @@ function renderHumanResponsePanel(pending: PendingHumanResponse): string {
     `;
   }
 
+  if (pending.kind === "ganglie") {
+    return `
+      <div class="status">${pending.message}</div>
+      <div class="status">请在手牌区选择 2 张手牌弃置（已选 ${selectedGanglieDiscardCardIds.length}/2），或改为承受 1 点伤害。</div>
+      <div class="response-actions">
+        <button data-role="ganglie-discard-confirm" ${selectedGanglieDiscardCardIds.length === 2 ? "" : "disabled"}>弃置所选两张</button>
+        <button data-role="ganglie-take-damage">受到 1 点伤害</button>
+      </div>
+    `;
+  }
+
   if (pending.kind === "axe-strike") {
     return `
       <div class="status">${pending.message}</div>
@@ -1043,22 +1099,10 @@ function renderHumanResponsePanel(pending: PendingHumanResponse): string {
   }
 
   if (pending.kind === "slash" && canUseSpearForSlashResponse(game)) {
-    const options = getPendingSpearResponseOptions(game);
-    if (options.length > 0) {
-      const cards = options
-        .map(
-          (card) =>
-            `<button class="hand-card ${selectedSpearResponseCardIds.includes(card.id) ? "selected" : ""}" data-role="spear-response-card" data-card-id="${card.id}" title="丈八·${getCardKindLabelZh(card.kind)}">
-              ${renderCardCornerMarks(card)}
-              <img class="card-icon" src="${ASSET_BASE}/cards/${card.kind}.png" alt="${getCardKindLabelZh(card.kind)}" />
-            </button>`
-        )
-        .join("");
-
+    if (getPendingSpearResponseOptions(game).length > 0) {
       return `
         <div class="status">${pending.message}</div>
-        <div class="status">你可指定 2 张手牌发动【丈八蛇矛】当【杀】打出（已选 ${selectedSpearResponseCardIds.length}/2）。</div>
-        <div class="hand-list">${cards}</div>
+        <div class="status">你可在手牌区指定 2 张手牌发动【丈八蛇矛】当【杀】打出（已选 ${selectedSpearResponseCardIds.length}/2）。</div>
         <div class="response-actions">
           <button data-role="spear-response-confirm" ${selectedSpearResponseCardIds.length === 2 ? "" : "disabled"}>发动丈八响应</button>
           <button data-role="response-choice" data-enabled="1" ${pending.allowRespond === false ? "disabled" : ""}>使用普通杀</button>
@@ -1554,11 +1598,27 @@ function render(): void {
     selectedSpearResponseCardIds = [];
   }
 
+  if (pendingResponse?.kind === "ganglie") {
+    const handIdsForGanglie = new Set(getHumanPlayer(game).hand.map((card) => card.id));
+    selectedGanglieDiscardCardIds = selectedGanglieDiscardCardIds
+      .filter((cardId) => handIdsForGanglie.has(cardId))
+      .slice(0, 2);
+  } else if (selectedGanglieDiscardCardIds.length > 0) {
+    selectedGanglieDiscardCardIds = [];
+  }
+
   if (activeSkillModeId === "zhiheng") {
     const validZhihengIds = new Set(getZhihengSelectableCardIds(game));
     selectedZhihengCardIds = selectedZhihengCardIds.filter((cardId) => validZhihengIds.has(cardId));
   } else if (selectedZhihengCardIds.length > 0) {
     selectedZhihengCardIds = [];
+  }
+
+  if (activeSkillModeId === "jieyin") {
+    const validJieyinIds = new Set(getHumanPlayer(game).hand.map((card) => card.id));
+    selectedJieyinCardIds = selectedJieyinCardIds.filter((cardId) => validJieyinIds.has(cardId)).slice(0, 2);
+  } else if (selectedJieyinCardIds.length > 0) {
+    selectedJieyinCardIds = [];
   }
 
   const availableSkillModes = new Set(
@@ -1570,6 +1630,7 @@ function render(): void {
     activeSkillModeId = null;
     selectedCardId = null;
     selectedZhihengCardIds = [];
+    selectedJieyinCardIds = [];
     pendingPrimaryTargetId = null;
     pendingSecondaryTargetId = null;
     pendingZoneChoiceActions = [];
@@ -1611,6 +1672,15 @@ function render(): void {
       ? selectedCardActionsFromHand
       : !selectedCardId && spearComposeMode
         ? spearActions
+      : !selectedCardId && activeSkillModeId === "jieyin"
+        ? selectedJieyinCardIds.length === 2
+          ? playableActions
+              .filter((action) => action.type === "play-card" && getActionModeId(action) === "jieyin")
+              .map((action) => ({
+                ...action,
+                cardId: `${VIRTUAL_JIEYIN_CARD_ID}::${selectedJieyinCardIds.join(",")}`
+              }))
+          : []
       : !selectedCardId && activeSkillModeId
         ? playableActions.filter((action) => {
             if (getActionModeId(action) !== activeSkillModeId) {
@@ -2304,6 +2374,7 @@ function getSkillModeLabel(modeId: string): string {
     guose: "国色",
     qixi: "奇袭",
     lijian: "离间",
+    jieyin: "结姻",
     zhiheng: "制衡",
     qingnang: "青囊"
   };
@@ -2323,7 +2394,10 @@ function renderHand(hand: Card[], legalActions: TurnAction[], currentSelectedCar
       <button class="hand-card ${
         (pendingManualDiscard && selectedDiscardCardIds.includes(card.id)) ||
         (pendingHumanResponse?.kind === "axe-strike" && selectedAxeCostCardIds.includes(card.id)) ||
+        (pendingHumanResponse?.kind === "ganglie" && selectedGanglieDiscardCardIds.includes(card.id)) ||
+        (pendingHumanResponse?.kind === "slash" && canUseSpearForSlashResponse(game) && selectedSpearResponseCardIds.includes(card.id)) ||
         (activeSkillModeId === "zhiheng" && selectedZhihengCardIds.includes(card.id)) ||
+        (activeSkillModeId === "jieyin" && selectedJieyinCardIds.includes(card.id)) ||
         (spearComposeMode && selectedSpearCostCardIds.includes(card.id)) ||
         card.id === currentSelectedCardId
           ? "selected"
@@ -2398,6 +2472,13 @@ function renderTargetActions(
   }
 
   if (!currentSelectedCardId && selectedCardActions.length === 0) {
+    if (activeSkillModeId === "jieyin") {
+      const endButton = endPlayAction
+        ? `<button data-role="end-play">结束出牌阶段</button>`
+        : "";
+      return `<div class="status">结姻：请先选择 2 张手牌，再选择一名受伤男性目标。</div>${endButton}`;
+    }
+
     const endButton = endPlayAction
       ? `<button data-role="end-play">结束出牌阶段</button>`
       : "";
@@ -2510,6 +2591,13 @@ function renderZhihengConfirmPanel(): string {
   `;
 }
 
+function renderJieyinConfirmPanel(): string {
+  const selectedCount = selectedJieyinCardIds.length;
+  return `
+    <div class="status">结姻：请选择 2 张手牌作为代价（已选 ${selectedCount}/2），再点击目标发动。</div>
+  `;
+}
+
 function renderMiddleResponseStrip(
   state: Game,
   pendingResponse: PendingHumanResponse | null,
@@ -2540,6 +2628,15 @@ function renderMiddleResponseStrip(
       <div class="strip-inner">
         <div class="strip-title">响应窗口</div>
         <div class="action-list response-inline">${renderZhihengConfirmPanel()}</div>
+      </div>
+    `;
+  }
+
+  if (activeSkillModeId === "jieyin") {
+    return `
+      <div class="strip-inner">
+        <div class="strip-title">响应窗口</div>
+        <div class="action-list response-inline">${renderJieyinConfirmPanel()}</div>
       </div>
     `;
   }
@@ -3001,6 +3098,7 @@ function bindSkillButtons(allLegalActions: TurnAction[]): void {
       previewTargetIds = [];
       selectedCardId = null;
       selectedZhihengCardIds = [];
+      selectedJieyinCardIds = [];
       pendingPrimaryTargetId = null;
       pendingSecondaryTargetId = null;
       pendingZoneChoiceActions = [];
@@ -3112,6 +3210,17 @@ function bindHumanResponseButtons(): void {
         }
         pendingHumanResponse = null;
         setResponsePreference(game, human.id, "nullify", false);
+        if (
+          current.action.type === "end-play-phase" &&
+          (current.nullifyTrickKind === "indulgence" || current.nullifyTrickKind === "lightning")
+        ) {
+          stepPhase(game);
+          clearResponseDecisionState(game);
+          runAutoUntilHumanChoice();
+          render();
+          ensureAutoLoop();
+          return;
+        }
         if (current.pendingHarvestCardId) {
           chooseHarvestCard(game, current.pendingHarvestCardId);
           clearResponseDecisionState(game);
@@ -3145,6 +3254,13 @@ function bindHumanResponseButtons(): void {
 
       if (current.kind === "blade-follow-up") {
         resolvePendingBladeFollowUp(game, enabled);
+        runAutoUntilHumanChoice();
+        render();
+        ensureAutoLoop();
+        return;
+      } else if (current.kind === "ganglie") {
+        resolvePendingGanglie(game, false);
+        selectedGanglieDiscardCardIds = [];
         runAutoUntilHumanChoice();
         render();
         ensureAutoLoop();
@@ -3246,29 +3362,6 @@ function bindHumanResponseButtons(): void {
     });
   });
 
-  const spearResponseCardButtons = app.querySelectorAll<HTMLButtonElement>("button[data-role='spear-response-card']");
-  spearResponseCardButtons.forEach((button) => {
-    button.addEventListener("click", () => {
-      if (!pendingHumanResponse || pendingHumanResponse.kind !== "slash" || !canUseSpearForSlashResponse(game)) {
-        return;
-      }
-
-      const cardId = button.dataset.cardId;
-      if (!cardId) {
-        return;
-      }
-
-      if (selectedSpearResponseCardIds.includes(cardId)) {
-        selectedSpearResponseCardIds = selectedSpearResponseCardIds.filter((id) => id !== cardId);
-      } else if (selectedSpearResponseCardIds.length < 2) {
-        selectedSpearResponseCardIds = [...selectedSpearResponseCardIds, cardId];
-      }
-
-      render();
-      ensureAutoLoop();
-    });
-  });
-
   const spearResponseConfirm = app.querySelector<HTMLButtonElement>("button[data-role='spear-response-confirm']");
   spearResponseConfirm?.addEventListener("click", () => {
     if (!pendingHumanResponse || pendingHumanResponse.kind !== "slash") {
@@ -3318,6 +3411,34 @@ function bindHumanResponseButtons(): void {
       render();
       ensureAutoLoop();
     });
+  });
+
+  const ganglieDiscardConfirm = app.querySelector<HTMLButtonElement>("button[data-role='ganglie-discard-confirm']");
+  ganglieDiscardConfirm?.addEventListener("click", () => {
+    if (pendingHumanResponse?.kind !== "ganglie" || selectedGanglieDiscardCardIds.length !== 2) {
+      return;
+    }
+
+    pendingHumanResponse = null;
+    resolvePendingGanglie(game, true, selectedGanglieDiscardCardIds);
+    selectedGanglieDiscardCardIds = [];
+    runAutoUntilHumanChoice();
+    render();
+    ensureAutoLoop();
+  });
+
+  const ganglieTakeDamage = app.querySelector<HTMLButtonElement>("button[data-role='ganglie-take-damage']");
+  ganglieTakeDamage?.addEventListener("click", () => {
+    if (pendingHumanResponse?.kind !== "ganglie") {
+      return;
+    }
+
+    pendingHumanResponse = null;
+    resolvePendingGanglie(game, false);
+    selectedGanglieDiscardCardIds = [];
+    runAutoUntilHumanChoice();
+    render();
+    ensureAutoLoop();
   });
 
   const iceSwordButtons = app.querySelectorAll<HTMLButtonElement>("button[data-role='ice-sword-choice']");
@@ -4100,7 +4221,46 @@ function getLikelyDyingTargetsForAiAction(state: Game, action: TurnAction): Play
 
   return targetIds
     .map((targetId) => state.players.find((player) => player.id === targetId))
-    .filter((target): target is PlayerState => Boolean(target && target.alive && target.hp <= 1));
+    .filter((target): target is PlayerState => {
+      if (!target || !target.alive) {
+        return false;
+      }
+
+      const likelyDamage = getLikelyDamageForAiActionTarget(state, action, kind, target.id);
+      return likelyDamage > 0 && target.hp <= likelyDamage;
+    });
+}
+
+function getLikelyDamageForAiActionTarget(state: Game, action: TurnAction, kind: string, targetId: string): number {
+  const getSlashLikeDamageBySource = (sourceId: string | undefined): number => {
+    if (!sourceId) {
+      return 1;
+    }
+
+    return state.luoyiActivePlayerId === sourceId ? 2 : 1;
+  };
+
+  if (kind === "slash") {
+    return getSlashLikeDamageBySource(action.actorId);
+  }
+
+  if (kind === "duel") {
+    return getSlashLikeDamageBySource(action.actorId);
+  }
+
+  if (kind === "collateral") {
+    if (action.secondaryTargetId !== targetId) {
+      return 0;
+    }
+
+    return getSlashLikeDamageBySource(action.targetId);
+  }
+
+  if (kind === "barbarian" || kind === "archery") {
+    return 1;
+  }
+
+  return 0;
 }
 
 function getPotentialDyingTargetsForAction(state: Game, action: TurnAction, kind: string): string[] {
@@ -4181,6 +4341,29 @@ function queuePendingFankuiPrompt(): boolean {
     message: `反馈：是否发动？（来源：${source?.name ?? "未知"}，剩余可触发 ${pending.remainingCount} 次）`,
     action: { type: "end-play-phase", actorId: human.id },
     allowRespond: zones.length > 0
+  };
+  return true;
+}
+
+function queuePendingGangliePrompt(): boolean {
+  const pending = game.pendingGanglie;
+  if (!pending) {
+    return false;
+  }
+
+  const human = getHumanPlayer(game);
+  if (pending.sourceId !== human.id || !human.alive) {
+    resolvePendingGanglie(game, true);
+    return false;
+  }
+
+  selectedGanglieDiscardCardIds = [];
+  const owner = game.players.find((player) => player.id === pending.ownerId);
+  pendingHumanResponse = {
+    kind: "ganglie",
+    message: `${owner?.name ?? "夏侯惇"} 发动刚烈：你需选择弃置两张手牌，或受到 1 点伤害。`,
+    action: { type: "end-play-phase", actorId: human.id },
+    allowRespond: human.hand.length >= 2
   };
   return true;
 }
@@ -4271,11 +4454,44 @@ function bindHandButtons(legalActions: TurnAction[]): void {
         return;
       }
 
+      if (pendingHumanResponse?.kind === "ganglie") {
+        if (selectedGanglieDiscardCardIds.includes(cardId)) {
+          selectedGanglieDiscardCardIds = selectedGanglieDiscardCardIds.filter((id) => id !== cardId);
+        } else if (selectedGanglieDiscardCardIds.length < 2) {
+          selectedGanglieDiscardCardIds = [...selectedGanglieDiscardCardIds, cardId];
+        }
+        render();
+        ensureAutoLoop();
+        return;
+      }
+
+      if (pendingHumanResponse?.kind === "slash" && canUseSpearForSlashResponse(game)) {
+        if (selectedSpearResponseCardIds.includes(cardId)) {
+          selectedSpearResponseCardIds = selectedSpearResponseCardIds.filter((id) => id !== cardId);
+        } else if (selectedSpearResponseCardIds.length < 2) {
+          selectedSpearResponseCardIds = [...selectedSpearResponseCardIds, cardId];
+        }
+        render();
+        ensureAutoLoop();
+        return;
+      }
+
       if (activeSkillModeId === "zhiheng") {
         if (selectedZhihengCardIds.includes(cardId)) {
           selectedZhihengCardIds = selectedZhihengCardIds.filter((id) => id !== cardId);
         } else {
           selectedZhihengCardIds = [...selectedZhihengCardIds, cardId];
+        }
+        render();
+        ensureAutoLoop();
+        return;
+      }
+
+      if (activeSkillModeId === "jieyin") {
+        if (selectedJieyinCardIds.includes(cardId)) {
+          selectedJieyinCardIds = selectedJieyinCardIds.filter((id) => id !== cardId);
+        } else if (selectedJieyinCardIds.length < 2) {
+          selectedJieyinCardIds = [...selectedJieyinCardIds, cardId];
         }
         render();
         ensureAutoLoop();
@@ -4569,6 +4785,56 @@ function queuePendingMassTrickNullifyPrompt(action: PlayCardAction): boolean {
   }
 
   const pending = getPendingMassTrickNullifyResponse(action);
+  if (!pending) {
+    return false;
+  }
+
+  pendingHumanResponse = pending;
+  return true;
+}
+
+function getPendingDelayedTrickNullifyResponse(): PendingHumanResponse | null {
+  if (game.winner || game.phase !== "judge") {
+    return null;
+  }
+
+  const current = game.players.find((player) => player.id === game.currentPlayerId);
+  if (!current || !current.alive) {
+    return null;
+  }
+
+  const delayed = current.judgmentZone.delayedTricks.find((card) => card.kind === "indulgence" || card.kind === "lightning");
+  if (!delayed) {
+    return null;
+  }
+
+  const human = getHumanPlayer(game);
+  if (!human.alive || !mayHaveAnyNullifyResponder(game) || !canRespondWithNullify(game, human.id)) {
+    return null;
+  }
+
+  const nullifyTrickKind = delayed.kind as "indulgence" | "lightning";
+  return {
+    kind: "nullify",
+    message: buildNullifyPromptMessage(game, nullifyTrickKind, 1, current.id, [current.id], current.id, 0, []),
+    action: { type: "end-play-phase", actorId: current.id },
+    allowRespond: true,
+    nullifyTrickKind,
+    nullifySourceId: current.id,
+    nullifyTargetId: current.id,
+    nullifyChosenDecisions: [],
+    nullifyGroupTargetIds: [current.id],
+    nullifyGroupCursor: 0,
+    nullifyQueuedTrueCount: 0
+  };
+}
+
+function queuePendingDelayedTrickNullifyPrompt(): boolean {
+  if (pendingHumanResponse) {
+    return false;
+  }
+
+  const pending = getPendingDelayedTrickNullifyResponse();
   if (!pending) {
     return false;
   }
@@ -4954,6 +5220,11 @@ function executeHumanChosenAction(action: TurnAction): void {
     ensureAutoLoop();
     return;
   }
+  if (queuePendingGangliePrompt()) {
+    render();
+    ensureAutoLoop();
+    return;
+  }
   if (queuePendingCollateralPrompt()) {
     render();
     ensureAutoLoop();
@@ -5103,6 +5374,7 @@ function runOneTick(): void {
     if (
       queuePendingDuelPrompt() ||
       queuePendingFankuiPrompt() ||
+      queuePendingGangliePrompt() ||
       queuePendingCollateralPrompt() ||
       queuePendingAxeStrikePrompt() ||
       queuePendingIceSwordPrompt() ||
@@ -5117,6 +5389,10 @@ function runOneTick(): void {
     return;
   }
 
+  if (queuePendingDelayedTrickNullifyPrompt()) {
+    return;
+  }
+
   if (autoChooseHarvestForAiIfNeeded()) {
     return;
   }
@@ -5125,7 +5401,7 @@ function runOneTick(): void {
     return;
   }
 
-  if (queuePendingFankuiPrompt() || queuePendingCollateralPrompt()) {
+  if (queuePendingFankuiPrompt() || queuePendingGangliePrompt() || queuePendingCollateralPrompt()) {
     return;
   }
 

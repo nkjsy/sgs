@@ -1,5 +1,6 @@
 import { createDeck, shuffleWithSeed } from "./cards";
 import { STANDARD_SKILL_IDS, createSkillSystemState, emitSkillEvent, hasSkill } from "./skills";
+import { inferPublicRelationScoreFromEvents } from "./relation-inference";
 import {
   Card,
   CardKind,
@@ -172,6 +173,7 @@ export function createInitialGame(seed: number, options: CreateInitialGameOption
     bladeFollowUpPromptModeByPlayer: {},
     pendingBladeFollowUp: null,
     pendingFankui: null,
+    pendingGanglie: null,
     pendingCollateral: null,
     pendingDuel: null,
     winner: null,
@@ -203,6 +205,7 @@ export function stepPhase(state: GameState): void {
     state.pendingAxeStrike ||
     state.pendingBladeFollowUp ||
     state.pendingFankui ||
+    state.pendingGanglie ||
     state.pendingCollateral ||
     state.pendingDuel
   ) {
@@ -800,6 +803,7 @@ export function applyAction(state: GameState, action: TurnAction): void {
     state.pendingIceSword ||
     state.pendingAxeStrike ||
     state.pendingBladeFollowUp ||
+    state.pendingGanglie ||
     state.pendingDuel
   ) {
     return;
@@ -1178,6 +1182,49 @@ export function resolvePendingFankui(
   }
 }
 
+export function resolvePendingGanglie(state: GameState, chooseDiscard: boolean, cardIds: string[] = []): void {
+  const pending = state.pendingGanglie;
+  if (!pending) {
+    return;
+  }
+
+  state.pendingGanglie = null;
+  const owner = getPlayerById(state, pending.ownerId);
+  const source = getPlayerById(state, pending.sourceId);
+
+  if (!owner || !source || !owner.alive || !source.alive) {
+    if (pending.remainingCount > 0 && owner?.alive && source?.alive && !state.winner) {
+      continueGanglieResolution(state, pending.sourceId, pending.ownerId, pending.remainingCount);
+    }
+    return;
+  }
+
+  const canDiscardTwo = source.hand.length >= 2;
+  if (chooseDiscard && canDiscardTwo) {
+    const requestedIds = Array.from(new Set(cardIds)).filter((cardId) => source.hand.some((card) => card.id === cardId));
+    const selectedIds = requestedIds.length >= 2 ? requestedIds.slice(0, 2) : source.hand.slice(0, 2).map((card) => card.id);
+    const discarded = selectedIds
+      .map((cardId) => removeCardFromHand(state, source, cardId))
+      .filter((card): card is Card => Boolean(card));
+    if (discarded.length < 2) {
+      source.hand.push(...discarded);
+      pushEvent(state, "skill", `${owner.name} 发动刚烈，${source.name} 选择承受 1 点伤害`);
+      dealDamage(state, owner.id, source.id, 1);
+    } else {
+      state.discard.push(...discarded);
+      tryTriggerLianyingAfterHandLoss(state, source);
+      pushEvent(state, "skill", `${owner.name} 发动刚烈，${source.name} 弃置了两张手牌`);
+    }
+  } else {
+    pushEvent(state, "skill", `${owner.name} 发动刚烈，${source.name} 选择承受 1 点伤害`);
+    dealDamage(state, owner.id, source.id, 1);
+  }
+
+  if (!state.winner && pending.remainingCount > 0 && owner.alive && source.alive) {
+    continueGanglieResolution(state, pending.sourceId, pending.ownerId, pending.remainingCount);
+  }
+}
+
 export function resolvePendingCollateral(state: GameState, enabled: boolean): void {
   const pending = state.pendingCollateral;
   if (!pending) {
@@ -1357,7 +1404,7 @@ function resolveDrawPhase(state: GameState, player: PlayerState): void {
           .map((targetId) => validTargets.find((candidate) => candidate.id === targetId))
           .filter((target): target is PlayerState => Boolean(target))
       : player.isAi
-        ? chooseAiTuxiTargets(player, validTargets)
+        ? chooseAiTuxiTargets(state, player, validTargets)
         : [])
       .slice(0, 2);
     for (const target of targets) {
@@ -1384,8 +1431,8 @@ function resolveDrawPhase(state: GameState, player: PlayerState): void {
   drawCards(state, player.id, drawCount);
 }
 
-function chooseAiTuxiTargets(player: PlayerState, validTargets: PlayerState[]): PlayerState[] {
-  const hostileTargets = validTargets.filter((candidate) => !isSameCamp(player.identity, candidate.identity));
+function chooseAiTuxiTargets(state: GameState, player: PlayerState, validTargets: PlayerState[]): PlayerState[] {
+  const hostileTargets = validTargets.filter((candidate) => !isKnownAllyForAutoDecision(state, player, candidate));
   if (hostileTargets.length === 0) {
     return [];
   }
@@ -1469,7 +1516,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
     return;
   }
 
-  if (action.cardId === VIRTUAL_JIEYIN_CARD_ID) {
+  if (action.cardId.startsWith(VIRTUAL_JIEYIN_CARD_ID)) {
     applyJieyinAction(state, actor, action);
     return;
   }
@@ -3017,15 +3064,24 @@ function shouldPlayDelayedNullify(
   target: PlayerState,
   currentlyNegated: boolean
 ): boolean {
+  if (!allowsResponse(state, responder.id, "nullify")) {
+    return false;
+  }
+
   if (!responder.hand.some((card) => card.kind === "nullify")) {
     return false;
+  }
+
+  if (!responder.isAi) {
+    return true;
   }
 
   if (state.nullifyResponsePolicy === "seat-order") {
     return true;
   }
 
-  return !currentlyNegated ? isSameCamp(responder.identity, target.identity) : !isSameCamp(responder.identity, target.identity);
+  const sameCamp = isKnownAllyForAutoDecision(state, responder, target);
+  return !currentlyNegated ? sameCamp : !sameCamp;
 }
 
 /**
@@ -3239,6 +3295,10 @@ function shouldPlayNullify(
     return false;
   }
 
+  if (!responder.isAi) {
+    return true;
+  }
+
   if (state.nullifyResponsePolicy === "seat-order") {
     return true;
   }
@@ -3250,15 +3310,12 @@ function shouldPlayNullify(
   }
 
   const beneficialToTarget = isBeneficialTrickForTarget(trickKind);
+  const sameCamp = isKnownAllyForAutoDecision(state, responder, target);
   if (!currentlyNegated) {
-    return beneficialToTarget
-      ? !isSameCamp(responder.identity, target.identity)
-      : isSameCamp(responder.identity, target.identity);
+    return beneficialToTarget ? !sameCamp : sameCamp;
   }
 
-  return beneficialToTarget
-    ? isSameCamp(responder.identity, target.identity)
-    : !isSameCamp(responder.identity, target.identity);
+  return beneficialToTarget ? sameCamp : !sameCamp;
 }
 
 function isBeneficialTrickForTarget(
@@ -3569,12 +3626,24 @@ function getYijiRecipients(state: GameState, owner: PlayerState): PlayerState[] 
   }
 
   const ordered = getAlivePlayersFrom(state, owner.id);
-  const allies = ordered.filter((candidate) => candidate.id !== owner.id && isSameCamp(candidate.identity, owner.identity));
-  if (allies.length > 0) {
-    return allies;
+  const publicAllies = ordered.filter((candidate) => candidate.id !== owner.id && isPubliclyKnownYijiAlly(owner, candidate));
+  if (publicAllies.length > 0) {
+    return publicAllies;
   }
 
   return [owner];
+}
+
+function isPubliclyKnownYijiAlly(owner: PlayerState, candidate: PlayerState): boolean {
+  if (!candidate.alive) {
+    return false;
+  }
+
+  if (candidate.identity !== "lord") {
+    return false;
+  }
+
+  return owner.identity === "lord" || owner.identity === "loyalist";
 }
 
 function tryTriggerFankui(state: GameState, sourceId: string, targetId: string, damageAmount: number): void {
@@ -3707,7 +3776,7 @@ function findGuicaiResponder(
       continue;
     }
 
-    const replacementCardIndex = selectGuicaiReplacementCardIndex(responder, judgedPlayer, originalJudgeCard, context);
+    const replacementCardIndex = selectGuicaiReplacementCardIndex(state, responder, judgedPlayer, originalJudgeCard, context);
     if (replacementCardIndex < 0) {
       continue;
     }
@@ -3722,6 +3791,7 @@ function findGuicaiResponder(
 }
 
 function selectGuicaiReplacementCardIndex(
+  state: GameState,
   responder: PlayerState,
   judgedPlayer: PlayerState,
   originalJudgeCard: Card,
@@ -3731,7 +3801,7 @@ function selectGuicaiReplacementCardIndex(
     return 0;
   }
 
-  const sameCamp = isSameCamp(responder.identity, judgedPlayer.identity);
+  const sameCamp = isKnownAllyForAutoDecision(state, responder, judgedPlayer);
 
   if (context.reason === "delayed-trick") {
     if (context.trickKind === "indulgence") {
@@ -3969,10 +4039,32 @@ function applyJieyinAction(state: GameState, actor: PlayerState, action: PlayCar
     return;
   }
 
-  const discardA = actor.hand.shift() as Card;
-  const discardB = actor.hand.shift() as Card;
+  const selectedCardIds = action.cardId.startsWith(`${VIRTUAL_JIEYIN_CARD_ID}::`)
+    ? Array.from(new Set(action.cardId.slice(`${VIRTUAL_JIEYIN_CARD_ID}::`.length).split(",").map((value) => value.trim()).filter(Boolean)))
+    : [];
+
+  let discardA: Card | undefined;
+  let discardB: Card | undefined;
+  if (selectedCardIds.length >= 2) {
+    const chosen = selectedCardIds.slice(0, 2);
+    discardA = removeCardFromHand(state, actor, chosen[0]);
+    discardB = removeCardFromHand(state, actor, chosen[1]);
+    if (!discardA || !discardB) {
+      if (discardA) {
+        actor.hand.push(discardA);
+      }
+      if (discardB) {
+        actor.hand.push(discardB);
+      }
+      return;
+    }
+  } else {
+    discardA = actor.hand.shift() as Card;
+    discardB = actor.hand.shift() as Card;
+    tryTriggerLianyingAfterHandLoss(state, actor);
+  }
+
   state.discard.push(discardA, discardB);
-  tryTriggerLianyingAfterHandLoss(state, actor);
   state.jieyinUsedInTurnByPlayer[actor.id] = true;
 
   if (actor.hp < actor.maxHp) {
@@ -4197,12 +4289,16 @@ function tryTriggerTiandu(state: GameState, judgedPlayer: PlayerState, judgeCard
 }
 
 function tryTriggerGanglie(state: GameState, sourceId: string, targetId: string, damageAmount: number): void {
-  const owner = requireAlivePlayer(state, targetId);
-  if (!hasSkill(state, owner.id, STANDARD_SKILL_IDS.xiahoudunGanglie)) {
+  continueGanglieResolution(state, sourceId, targetId, damageAmount);
+}
+
+function continueGanglieResolution(state: GameState, sourceId: string, ownerId: string, remainingCount: number): void {
+  const owner = getPlayerById(state, ownerId);
+  if (!owner || !owner.alive || !hasSkill(state, owner.id, STANDARD_SKILL_IDS.xiahoudunGanglie)) {
     return;
   }
 
-  for (let index = 0; index < damageAmount; index += 1) {
+  for (let index = 0; index < remainingCount; index += 1) {
     const source = getPlayerById(state, sourceId);
     if (!source || !source.alive || !owner.alive) {
       return;
@@ -4218,7 +4314,16 @@ function tryTriggerGanglie(state: GameState, sourceId: string, targetId: string,
       continue;
     }
 
-    if (source.hand.length >= 2) {
+    if (source.hand.length < 2) {
+      pushEvent(state, "skill", `${owner.name} 发动刚烈，${source.name} 手牌不足两张，受到 1 点伤害`);
+      dealDamage(state, owner.id, source.id, 1);
+      if (state.winner) {
+        return;
+      }
+      continue;
+    }
+
+    if (source.isAi) {
       const discardA = source.hand.shift() as Card;
       const discardB = source.hand.shift() as Card;
       state.discard.push(discardA, discardB);
@@ -4227,11 +4332,12 @@ function tryTriggerGanglie(state: GameState, sourceId: string, targetId: string,
       continue;
     }
 
-    pushEvent(state, "skill", `${owner.name} 发动刚烈，${source.name} 手牌不足两张，受到 1 点伤害`);
-    dealDamage(state, owner.id, source.id, 1);
-    if (state.winner) {
-      return;
-    }
+    state.pendingGanglie = {
+      ownerId: owner.id,
+      sourceId: source.id,
+      remainingCount: remainingCount - index - 1
+    };
+    return;
   }
 }
 
@@ -4432,13 +4538,31 @@ function consumePeachLikeForRescue(state: GameState, player: PlayerState): Card 
     return undefined;
   }
 
-  const redIndex = player.hand.findIndex((card) => isRed(card));
-  if (redIndex < 0) {
+  const redHandIndex = player.hand.findIndex((card) => isRed(card));
+  if (redHandIndex >= 0) {
+    const [converted] = player.hand.splice(redHandIndex, 1);
+    pushEvent(state, "skill", `${player.name} 在回合外发动急救，将红色手牌当桃使用`);
+    return {
+      ...converted,
+      kind: "peach"
+    };
+  }
+
+  const redEquipment =
+    (player.equipment.weapon && isRed(player.equipment.weapon) ? player.equipment.weapon : null) ??
+    (player.equipment.armor && isRed(player.equipment.armor) ? player.equipment.armor : null) ??
+    (player.equipment.horsePlus && isRed(player.equipment.horsePlus) ? player.equipment.horsePlus : null) ??
+    (player.equipment.horseMinus && isRed(player.equipment.horseMinus) ? player.equipment.horseMinus : null);
+  if (!redEquipment) {
     return undefined;
   }
 
-  const [converted] = player.hand.splice(redIndex, 1);
-  pushEvent(state, "skill", `${player.name} 在回合外发动急救，将红色手牌当桃使用`);
+  const converted = removeOwnedCardById(state, player, redEquipment.id);
+  if (!converted) {
+    return undefined;
+  }
+
+  pushEvent(state, "skill", `${player.name} 在回合外发动急救，将红色装备当桃使用`);
   return {
     ...converted,
     kind: "peach"
@@ -4458,7 +4582,16 @@ function canProvidePeachLikeForRescue(state: GameState, player: PlayerState): bo
     return false;
   }
 
-  return player.hand.some((card) => isRed(card));
+  if (player.hand.some((card) => isRed(card))) {
+    return true;
+  }
+
+  return Boolean(
+    (player.equipment.weapon && isRed(player.equipment.weapon)) ||
+      (player.equipment.armor && isRed(player.equipment.armor)) ||
+      (player.equipment.horsePlus && isRed(player.equipment.horsePlus)) ||
+      (player.equipment.horseMinus && isRed(player.equipment.horseMinus))
+  );
 }
 
 /**
@@ -4502,7 +4635,28 @@ function shouldUsePeachToRescue(state: GameState, rescuer: PlayerState, target: 
     return hasQueuedAffirmativeResponseDecision(state, rescuer.id, "peach");
   }
 
-  return isSameCamp(rescuer.identity, target.identity);
+  return isKnownAllyForAutoDecision(state, rescuer, target);
+}
+
+function isKnownAllyForAutoDecision(state: GameState, observer: PlayerState, candidate: PlayerState): boolean {
+  if (observer.id === candidate.id) {
+    return true;
+  }
+
+  if (!candidate.alive) {
+    return isSameCamp(observer.identity, candidate.identity);
+  }
+
+  if (candidate.identity === "lord") {
+    return observer.identity === "lord" || observer.identity === "loyalist";
+  }
+
+  const relationScore = inferPublicRelationScoreFromEvents(state.events, observer, candidate);
+  if (relationScore <= -2) {
+    return true;
+  }
+
+  return false;
 }
 
 function hasQueuedAffirmativeResponseDecision(state: GameState, playerId: string, kind: ResponseKind): boolean {

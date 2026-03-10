@@ -33,6 +33,7 @@ export interface SkillSystemState {
 export type ResponseKind =
   | "dodge"
   | "slash"
+  | "ganglie"
   | "collateral"
   | "nullify"
   | "fankui"
@@ -47,6 +48,7 @@ export type ResponseKind =
 export interface ResponsePreference {
   dodge?: boolean;
   slash?: boolean;
+  ganglie?: boolean;
   collateral?: boolean;
   nullify?: boolean;
   fankui?: boolean;
@@ -334,6 +336,12 @@ export interface GameState {
   pendingFankui: {
     sourceId: string;
     targetId: string;
+    remainingCount: number;
+  } | null;
+  /** 刚烈待选择状态。 */
+  pendingGanglie: {
+    ownerId: string;
+    sourceId: string;
     remainingCount: number;
   } | null;
   /** 借刀杀人“是否出杀”待确认状态。 */
