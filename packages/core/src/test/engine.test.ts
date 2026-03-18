@@ -3,8 +3,11 @@ import test from "node:test";
 import { createDeck } from "../cards";
 import {
   applyAction,
+  chooseYijiRecipient,
   createInitialGame,
+  getPendingLiuliChoice,
   getPendingMassTrickAction,
+  getPendingYijiChoice,
   getLegalActions,
   queueResponseCardChoice,
   queueResponseDecision,
@@ -14,12 +17,15 @@ import {
   resolvePendingCollateral,
   resolvePendingDuelResponse,
   resolvePendingIceSword,
+  resolvePendingLiuli,
   setAxeStrikePromptMode,
   setCollateralPromptMode,
   setDuelPromptMode,
   setFankuiPromptMode,
   setIceSwordPromptMode,
+  setLiuliPromptMode,
   setLuoyiChoice,
+  setManualYijiDistributionMode,
   setPeachRescuePromptMode,
   setResponsePreference,
   stepPhase
@@ -36,6 +42,21 @@ test("createInitialGame should initialize 5 players and 4 cards each", () => {
   for (const player of state.players) {
     assert.equal(player.hand.length, 4);
   }
+});
+
+/**
+ * 验证存在待确认结算时，不应继续暴露常规出牌动作。
+ */
+test("getLegalActions should return no play actions while a blocking pending decision exists", () => {
+  const state = createInitialGame(42);
+  state.phase = "play";
+  state.pendingGanglie = {
+    ownerId: state.players[1].id,
+    sourceId: state.players[0].id,
+    remainingCount: 1
+  };
+
+  assert.deepEqual(getLegalActions(state), []);
 });
 
 /**
@@ -569,6 +590,34 @@ test("archery should be cancelable per target by nullify", () => {
 
   assert.equal(target.hp, hpBefore);
   assert.ok(state.discard.some((card) => card.id === "protector-nullify"));
+});
+
+test("archery should consume dodge from target and prevent damage", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[2];
+  const target = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+
+  actor.hand = [{ id: "archery-dodge-1", kind: "archery", suit: "spade", point: 7 }];
+  target.hp = 1;
+  target.hand = [{ id: "archery-dodge-response-1", kind: "dodge", suit: "heart", point: 2 }];
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "archery-dodge-1"
+  });
+
+  assert.equal(target.hp, hpBefore);
+  assert.equal(target.hand.length, 0);
+  assert.ok(state.discard.some((card) => card.id === "archery-dodge-response-1"));
 });
 
 test("pending mass trick should not leak queued nullify decisions across targets", () => {
@@ -2350,6 +2399,51 @@ test("yiji skill should draw 2 cards after taking damage", () => {
   assert.equal(target.hp, hpBefore - 1);
   assert.ok(target.hand.some((card) => card.id === "yiji-draw-1"));
   assert.ok(target.hand.some((card) => card.id === "yiji-draw-2"));
+});
+
+test("manual yiji mode should wait for human distribution choice", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+  const ally = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, target.id, STANDARD_SKILL_IDS.guojiaYiji);
+  target.isAi = false;
+  setManualYijiDistributionMode(state, target.id, true);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.hand = [{ id: "slash-yiji-manual-1", kind: "slash", suit: "spade", point: 8 }];
+  state.deck = [
+    { id: "yiji-manual-draw-1", kind: "dodge", suit: "heart", point: 2 },
+    { id: "yiji-manual-draw-2", kind: "peach", suit: "diamond", point: 7 }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "slash-yiji-manual-1",
+    targetId: target.id
+  });
+
+  const pending = getPendingYijiChoice(state);
+  assert.ok(pending);
+  assert.equal(pending?.ownerId, target.id);
+  assert.deepEqual(
+    pending?.cards.map((card) => card.id),
+    ["yiji-manual-draw-1", "yiji-manual-draw-2"]
+  );
+
+  chooseYijiRecipient(state, "yiji-manual-draw-1", ally.id);
+  assert.ok(ally.hand.some((card) => card.id === "yiji-manual-draw-1"));
+
+  chooseYijiRecipient(state, "yiji-manual-draw-2", target.id);
+  assert.equal(getPendingYijiChoice(state), null);
+  assert.ok(target.hand.some((card) => card.id === "yiji-manual-draw-2"));
 });
 
 /**
@@ -4423,6 +4517,37 @@ test("qinggang sword should bypass eight diagram auto-dodge", () => {
   assert.equal(state.discard.some((card) => card.id === "judge-red-bypass-1"), false);
 });
 
+test("qinggang sword should still allow hand dodge response", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+  const target = state.players[1];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.currentPlayerId = actor.id;
+  state.phase = "play";
+  actor.equipment.weapon = { id: "qinggang-hand-dodge-weapon-1", kind: "weapon_qinggang_sword", suit: "spade", point: 6 };
+  actor.hand = [{ id: "qinggang-hand-dodge-slash-1", kind: "slash", suit: "spade", point: 9 }];
+  target.equipment.armor = { id: "qinggang-hand-dodge-armor-1", kind: "armor_eight_diagram", suit: "spade", point: 2 };
+  target.hand = [{ id: "qinggang-hand-dodge-response-1", kind: "dodge", suit: "diamond", point: 4 }];
+  state.deck = [{ id: "qinggang-hand-dodge-judge-1", kind: "peach", suit: "heart", point: 7 }];
+
+  const hpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: actor.id,
+    cardId: "qinggang-hand-dodge-slash-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, hpBefore);
+  assert.equal(target.hand.length, 0);
+  assert.ok(state.discard.some((card) => card.id === "qinggang-hand-dodge-response-1"));
+  assert.equal(state.discard.some((card) => card.id === "qinggang-hand-dodge-judge-1"), false);
+});
+
 /**
  * 验证方天画戟多目标结算时，仁王盾会按目标分别生效。
  */
@@ -4649,6 +4774,41 @@ test("ai tuxi should avoid event-inferred ally target", () => {
   assert.ok(actor.hand.some((card) => card.id === "tuxi-infer-hostile-1"));
   assert.ok(actor.hand.some((card) => card.id === "tuxi-infer-safe-draw-1"));
   assert.equal(inferredAlly.hand.some((card) => card.id === "tuxi-infer-ally-1"), true);
+});
+
+test("lord ai tuxi should avoid loyalist with public anti-rebel evidence", () => {
+  const state = createInitialGame(42);
+  const lord = state.players[0];
+  const loyalist = state.players[1];
+  const rebelTarget = state.players[2];
+  const secondRebel = state.players[3];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, lord.id, STANDARD_SKILL_IDS.zhangliaoTuxi);
+
+  state.currentPlayerId = lord.id;
+  state.phase = "draw";
+  loyalist.hand = [{ id: "tuxi-loyalist-keep-1", kind: "dodge", suit: "heart", point: 4 }];
+  secondRebel.hand = [{ id: "tuxi-rebel-hit-1", kind: "slash", suit: "spade", point: 8 }];
+  rebelTarget.alive = false;
+  rebelTarget.identity = "rebel";
+  state.deck = [
+    { id: "tuxi-lord-draw-1", kind: "peach", suit: "diamond", point: 6 },
+    { id: "tuxi-lord-draw-2", kind: "nullify", suit: "club", point: 10 }
+  ];
+  state.events.push({ type: "damage", message: `${loyalist.name} 对 ${rebelTarget.name} 造成 1 点伤害` });
+
+  stepPhase(state);
+
+  assert.equal(lord.hand.some((card) => card.id === "tuxi-loyalist-keep-1"), false);
+  assert.equal(loyalist.hand.some((card) => card.id === "tuxi-loyalist-keep-1"), true);
+  assert.ok(
+    lord.hand.some((card) => card.id === "tuxi-rebel-hit-1") || lord.hand.some((card) => card.id === "tuxi-lord-draw-1"),
+    "主公张辽至少不该把突袭浪费在已有公开反贼证据的忠臣身上"
+  );
 });
 
 /**
@@ -4969,6 +5129,36 @@ test("jijiang should not request slash from non-shu responders", () => {
   assert.equal(nonShuAlly.hand.length, 1);
 });
 
+test("jijiang should not request slash from hostile shu responders", () => {
+  const state = createInitialGame(42);
+  const source = state.players[4];
+  const target = state.players[0];
+  const hostileShu = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, target.id, STANDARD_SKILL_IDS.liubeiJijiang);
+  assignSkillToPlayer(state, hostileShu.id, STANDARD_SKILL_IDS.zhangfeiPaoxiao);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.hand = [{ id: "duel-jijiang-hostile-shu-1", kind: "duel", suit: "spade", point: 12 }];
+  hostileShu.hand = [{ id: "hostile-shu-slash-jijiang-1", kind: "slash", suit: "club", point: 6 }];
+
+  const targetHpBefore = target.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "duel-jijiang-hostile-shu-1",
+    targetId: target.id
+  });
+
+  assert.equal(target.hp, targetHpBefore - 1);
+  assert.equal(hostileShu.hand.length, 1);
+});
+
 /**
  * 验证诸葛亮【观星】可调整牌堆顶顺序，使后续摸牌更优。
  */
@@ -5247,6 +5437,114 @@ test("keji skill should skip discard when no slash used", () => {
   assert.equal(actor.hand.length, 3);
 });
 
+test("keji should still skip discard under manual discard mode", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.lvmengKeji);
+  state.manualDiscardByPlayer[actor.id] = true;
+
+  state.currentPlayerId = actor.id;
+  state.phase = "discard";
+  state.slashUsedInTurn = 0;
+  actor.hp = 2;
+  actor.hand = [
+    { id: "keji-manual-1", kind: "slash", suit: "spade", point: 2 },
+    { id: "keji-manual-2", kind: "dodge", suit: "heart", point: 4 },
+    { id: "keji-manual-3", kind: "peach", suit: "diamond", point: 6 }
+  ];
+
+  stepPhase(state);
+
+  assert.equal(actor.hand.length, 3);
+  assert.equal(state.phase, "end");
+  assert.ok(state.events.some((event) => event.message.includes("发动克己，跳过弃牌阶段")));
+});
+
+test("manual discard mode should still pause discard phase without keji", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  state.manualDiscardByPlayer[actor.id] = true;
+  state.currentPlayerId = actor.id;
+  state.phase = "discard";
+  state.slashUsedInTurn = 0;
+  state.slashPlayedInTurn = 0;
+  actor.hp = 2;
+  actor.hand = [
+    { id: "manual-discard-1", kind: "slash", suit: "spade", point: 2 },
+    { id: "manual-discard-2", kind: "dodge", suit: "heart", point: 4 },
+    { id: "manual-discard-3", kind: "peach", suit: "diamond", point: 6 }
+  ];
+
+  stepPhase(state);
+
+  assert.equal(actor.hand.length, 3);
+  assert.equal(state.phase, "discard");
+});
+
+test("keji should not skip discard after slash was played during current turn", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.lvmengKeji);
+
+  state.currentPlayerId = actor.id;
+  state.phase = "discard";
+  state.slashUsedInTurn = 0;
+  state.slashPlayedInTurn = 1;
+  actor.hp = 2;
+  actor.hand = [
+    { id: "keji-played-1", kind: "slash", suit: "spade", point: 2 },
+    { id: "keji-played-2", kind: "dodge", suit: "heart", point: 4 },
+    { id: "keji-played-3", kind: "peach", suit: "diamond", point: 6 }
+  ];
+
+  stepPhase(state);
+
+  assert.equal(actor.hand.length, 2);
+});
+
+test("keji should still skip discard after indulgence skips play phase", () => {
+  const state = createInitialGame(42);
+  const actor = state.players[0];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, actor.id, STANDARD_SKILL_IDS.lvmengKeji);
+  state.manualDiscardByPlayer[actor.id] = true;
+  state.currentPlayerId = actor.id;
+  state.phase = "discard";
+  state.skipPlayPhaseForCurrentTurn = true;
+  state.slashUsedInTurn = 0;
+  state.slashPlayedInTurn = 0;
+  actor.hp = 2;
+  actor.hand = [
+    { id: "keji-indulgence-1", kind: "slash", suit: "spade", point: 2 },
+    { id: "keji-indulgence-2", kind: "dodge", suit: "heart", point: 4 },
+    { id: "keji-indulgence-3", kind: "peach", suit: "diamond", point: 6 }
+  ];
+
+  stepPhase(state);
+
+  assert.equal(actor.hand.length, 3);
+  assert.equal(state.phase, "end");
+});
+
 /**
  * 验证吕蒙【克己】在本回合使用过【杀】时不会跳过弃牌阶段。
  */
@@ -5263,6 +5561,7 @@ test("keji skill should not skip discard after slash used", () => {
   state.currentPlayerId = actor.id;
   state.phase = "discard";
   state.slashUsedInTurn = 1;
+  state.slashPlayedInTurn = 1;
   actor.hp = 2;
   actor.hand = [
     { id: "keji-drop-1", kind: "slash", suit: "spade", point: 2 },
@@ -5624,6 +5923,85 @@ test("liuli skill should redirect slash to another target in range", () => {
   assert.equal(liuliOwner.hp, liuliHpBefore);
   assert.equal(redirectedTarget.hp, redirectedHpBefore - 1);
   assert.equal(liuliOwner.hand.length, 0);
+});
+
+test("manual liuli prompt should wait and allow declining into dodge", () => {
+  const state = createInitialGame(42);
+  const source = state.players[0];
+  const liuliOwner = state.players[1];
+  const redirectedTarget = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, liuliOwner.id, STANDARD_SKILL_IDS.daqiaoLiuli);
+  liuliOwner.isAi = false;
+  setLiuliPromptMode(state, liuliOwner.id, true);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.hand = [{ id: "liuli-manual-source-slash-1", kind: "slash", suit: "spade", point: 8 }];
+  liuliOwner.hand = [{ id: "liuli-manual-dodge-1", kind: "dodge", suit: "heart", point: 2 }];
+
+  queueResponseDecision(state, liuliOwner.id, "dodge", true);
+
+  const liuliHpBefore = liuliOwner.hp;
+  const redirectedHpBefore = redirectedTarget.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "liuli-manual-source-slash-1",
+    targetId: liuliOwner.id
+  });
+
+  assert.ok(getPendingLiuliChoice(state));
+  assert.equal(liuliOwner.hp, liuliHpBefore);
+  assert.equal(redirectedTarget.hp, redirectedHpBefore);
+
+  resolvePendingLiuli(state);
+
+  assert.equal(getPendingLiuliChoice(state), null);
+  assert.equal(liuliOwner.hp, liuliHpBefore);
+  assert.equal(liuliOwner.hand.length, 0);
+  assert.equal(redirectedTarget.hp, redirectedHpBefore);
+});
+
+test("manual liuli prompt should use the chosen discard card when redirecting", () => {
+  const state = createInitialGame(42);
+  const source = state.players[0];
+  const liuliOwner = state.players[1];
+  const redirectedTarget = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, liuliOwner.id, STANDARD_SKILL_IDS.daqiaoLiuli);
+  liuliOwner.isAi = false;
+  setLiuliPromptMode(state, liuliOwner.id, true);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.hand = [{ id: "liuli-manual-redirect-source-slash-1", kind: "slash", suit: "spade", point: 8 }];
+  liuliOwner.hand = [
+    { id: "liuli-manual-redirect-keep-1", kind: "dodge", suit: "heart", point: 2 },
+    { id: "liuli-manual-redirect-discard-1", kind: "peach", suit: "diamond", point: 9 }
+  ];
+
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "liuli-manual-redirect-source-slash-1",
+    targetId: liuliOwner.id
+  });
+
+  assert.ok(getPendingLiuliChoice(state));
+  resolvePendingLiuli(state, redirectedTarget.id, "liuli-manual-redirect-discard-1");
+
+  assert.equal(liuliOwner.hand.some((card) => card.id === "liuli-manual-redirect-keep-1"), true);
+  assert.equal(liuliOwner.hand.some((card) => card.id === "liuli-manual-redirect-discard-1"), false);
+  assert.ok(state.discard.some((card) => card.id === "liuli-manual-redirect-discard-1"));
 });
 
 /**
@@ -6489,11 +6867,42 @@ test("hujia should not request dodge from non-wei responders", () => {
   assert.equal(nonWei.hand.length, 1);
 });
 
+test("hujia should not request dodge from hostile wei responders", () => {
+  const state = createInitialGame(42);
+  const source = state.players[4];
+  const lord = state.players[0];
+  const hostileWei = state.players[2];
+
+  for (const player of state.players) {
+    player.hand = [];
+  }
+
+  assignSkillToPlayer(state, lord.id, STANDARD_SKILL_IDS.caocaoHujia);
+  assignSkillToPlayer(state, hostileWei.id, STANDARD_SKILL_IDS.xiahoudunGanglie);
+
+  state.currentPlayerId = source.id;
+  state.phase = "play";
+  source.equipment.weapon = { id: "hujia-hostile-weapon-1", kind: "weapon_qinggang_sword", suit: "diamond", point: 2 };
+  source.hand = [{ id: "hujia-slash-hostile-wei", kind: "slash", suit: "spade", point: 8 }];
+  hostileWei.hand = [{ id: "hujia-dodge-hostile-wei", kind: "dodge", suit: "heart", point: 2 }];
+
+  const lordHpBefore = lord.hp;
+  applyAction(state, {
+    type: "play-card",
+    actorId: source.id,
+    cardId: "hujia-slash-hostile-wei",
+    targetId: lord.id
+  });
+
+  assert.equal(lord.hp, lordHpBefore - 1);
+  assert.equal(hostileWei.hand.length, 1);
+});
+
 test("hujia should satisfy wushuang two-dodge requirement with ally plus lord dodge", () => {
   const state = createInitialGame(42);
-  const lvbu = state.players[1];
+  const lvbu = state.players[4];
   const lord = state.players[0];
-  const weiAlly = state.players[2];
+  const weiAlly = state.players[1];
 
   for (const player of state.players) {
     player.hand = [];
@@ -6524,9 +6933,9 @@ test("hujia should satisfy wushuang two-dodge requirement with ally plus lord do
 
 test("hujia should fail wushuang response when total dodges are insufficient", () => {
   const state = createInitialGame(42);
-  const lvbu = state.players[1];
+  const lvbu = state.players[4];
   const lord = state.players[0];
-  const weiAlly = state.players[2];
+  const weiAlly = state.players[1];
 
   for (const player of state.players) {
     player.hand = [];

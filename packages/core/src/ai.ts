@@ -129,6 +129,16 @@ export function chooseAiAction(context: AiDecisionContext): TurnAction {
       return shouldAttackPlayer(context, perception, sourceTarget) && shouldAttackPlayer(context, perception, secondaryTarget);
     }
 
+    if (cardKind === "collateral") {
+      const weaponHolder = context.state.players.find((player) => player.id === action.targetId);
+      const slashTarget = context.state.players.find((player) => player.id === action.secondaryTargetId);
+      if (!weaponHolder || !slashTarget) {
+        return false;
+      }
+
+      return !isLikelyAlly(context, perception, weaponHolder) && shouldAttackPlayer(context, perception, slashTarget);
+    }
+
     const target = context.state.players.find((player) => player.id === action.targetId);
     if (!target) {
       return false;
@@ -485,7 +495,13 @@ function scoreUtilityTrickAction(context: AiDecisionContext, perception: AiPerce
   }
 
   if (kind === "collateral") {
-    return 50 + targetCardPressure * 4 + hostility * 3 + renegadeTargetBonus;
+    const weaponHolder = context.state.players.find((player) => player.id === action.targetId);
+    const slashTarget = context.state.players.find((player) => player.id === action.secondaryTargetId);
+    const slashTargetPressure = slashTarget ? slashTarget.hand.length + countEquipmentCards(slashTarget) : 0;
+    const slashTargetHostility = slashTarget ? Math.max(0, getRelationScore(perception, slashTarget.id)) : 0;
+    const slashTargetRenegadeBonus = slashTarget ? getRenegadeLordSidePressureBonus(context, perception, slashTarget) : 0;
+    const holderPenalty = weaponHolder && isLikelyAlly(context, perception, weaponHolder) ? 60 : 0;
+    return 44 + targetCardPressure * 2 + slashTargetPressure * 4 + slashTargetHostility * 5 + slashTargetRenegadeBonus - holderPenalty;
   }
 
   if (kind === "indulgence") {

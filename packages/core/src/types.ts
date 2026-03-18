@@ -224,6 +224,36 @@ export interface PendingHarvestState {
   trickCard: Card;
 }
 
+export interface PendingYijiState {
+  /** 发动遗计的角色编号。 */
+  ownerId: string;
+  /** 当前这一轮遗计可分配的牌。 */
+  cards: Card[];
+  /** 当前这一轮结束后还剩多少轮“摸两张并分配”。 */
+  remainingBatchCount: number;
+  /** 本次伤害的来源角色编号；无来源伤害时为空。 */
+  sourceId: string | null;
+  /** 本次伤害点数。 */
+  damageAmount: number;
+  /** 造成伤害的牌。 */
+  damageCard?: Card;
+}
+
+export interface PendingLiuliState {
+  /** 杀的来源角色编号。 */
+  sourceId: string;
+  /** 原始目标角色编号。 */
+  targetId: string;
+  /** 被响应的杀。 */
+  slashCard: Card;
+  /** 杀的文本标签。 */
+  slashLabel: string;
+  /** 结算完成后是否应弃置杀。 */
+  shouldDiscardSlash: boolean;
+  /** 可转移的目标列表。 */
+  candidateIds: string[];
+}
+
 export interface PendingMassTrickState {
   /** 发动群体锦囊的角色编号。 */
   sourceId: string;
@@ -235,6 +265,21 @@ export interface PendingMassTrickState {
   cursor: number;
   /** 群体锦囊实体牌，结算完成后进入弃牌堆。 */
   trickCard: Card;
+}
+
+export interface PendingGuicaiState {
+  /** 当前被判定角色编号。 */
+  judgedPlayerId: string;
+  /** 当前等待决定的鬼才拥有者编号。 */
+  guicaiOwnerId: string;
+  /** 原始判定牌。 */
+  originalJudgeCard: Card;
+  /** 当前正在结算的延时锦囊。 */
+  currentTrickCard: Card;
+  /** 当前延时锦囊类型。 */
+  trickKind: Extract<CardKind, "indulgence" | "lightning">;
+  /** 当前角色判定区后续仍待结算的延时锦囊队列。 */
+  remainingDelayedTricks: Card[];
 }
 
 /**
@@ -259,6 +304,8 @@ export interface GameState {
   turnCount: number;
   /** 当前行动角色在本回合已使用【杀】的次数。 */
   slashUsedInTurn: number;
+  /** 当前行动角色在本回合是否使用或打出过【杀】。 */
+  slashPlayedInTurn: number;
   /** 当前回合是否应跳过出牌阶段。 */
   skipPlayPhaseForCurrentTurn: boolean;
   /** 当前回合【裸衣】增伤生效角色编号。 */
@@ -295,12 +342,24 @@ export interface GameState {
   collateralPromptModeByPlayer: Record<string, boolean>;
   /** 各角色是否启用桃救援手动确认模式。 */
   peachRescuePromptModeByPlayer: Record<string, boolean>;
+  /** 各角色是否启用流离手动确认模式。 */
+  liuliPromptModeByPlayer: Record<string, boolean>;
+  /** 各角色是否启用鬼才手动确认模式。 */
+  guicaiPromptModeByPlayer: Record<string, boolean>;
   /** 各角色预结算的八卦阵判定结果队列（按响应次序消费）。 */
   preparedEightDiagramResultByPlayer: Record<string, boolean[]>;
   /** 各角色是否启用手动弃牌模式。 */
   manualDiscardByPlayer: Record<string, boolean>;
+  /** 各角色是否启用遗计手动分配模式。 */
+  manualYijiDistributionByPlayer: Record<string, boolean>;
   /** 是否启用五谷丰登手动选牌模式。 */
   manualHarvestSelectionMode: boolean;
+  /** 流离待确认状态。 */
+  pendingLiuli: PendingLiuliState | null;
+  /** 鬼才待确认状态。 */
+  pendingGuicai: PendingGuicaiState | null;
+  /** 遗计待分配状态。 */
+  pendingYiji: PendingYijiState | null;
   /** 五谷丰登待选牌状态。 */
   pendingHarvest: PendingHarvestState | null;
   /** 是否启用南蛮/万箭逐目标暂停结算模式。 */

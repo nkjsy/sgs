@@ -1,6 +1,10 @@
 import { createDeck, shuffleWithSeed } from "./cards";
 import { STANDARD_SKILL_IDS, createSkillSystemState, emitSkillEvent, hasSkill } from "./skills";
-import { inferPublicRelationScoreFromEvents } from "./relation-inference";
+import {
+  buildPublicEventPatterns,
+  extractPublicInteractionMatch,
+  inferPublicRelationScoreFromEvents
+} from "./relation-inference";
 import {
   Card,
   CardKind,
@@ -141,6 +145,7 @@ export function createInitialGame(seed: number, options: CreateInitialGameOption
     latestPlayedCard: null,
     turnCount: 1,
     slashUsedInTurn: 0,
+    slashPlayedInTurn: 0,
     skipPlayPhaseForCurrentTurn: false,
     luoyiActivePlayerId: null,
     luoyiChosenInTurnByPlayer: {},
@@ -159,9 +164,15 @@ export function createInitialGame(seed: number, options: CreateInitialGameOption
     fankuiPromptModeByPlayer: {},
     collateralPromptModeByPlayer: {},
     peachRescuePromptModeByPlayer: {},
+    liuliPromptModeByPlayer: {},
+    guicaiPromptModeByPlayer: {},
     preparedEightDiagramResultByPlayer: {},
     manualDiscardByPlayer: {},
+    manualYijiDistributionByPlayer: {},
     manualHarvestSelectionMode: false,
+    pendingLiuli: null,
+    pendingGuicai: null,
+    pendingYiji: null,
     pendingHarvest: null,
     manualMassTrickStepMode: false,
     pendingMassTrick: null,
@@ -200,15 +211,7 @@ export function stepPhase(state: GameState): void {
     return;
   }
 
-  if (
-    state.pendingIceSword ||
-    state.pendingAxeStrike ||
-    state.pendingBladeFollowUp ||
-    state.pendingFankui ||
-    state.pendingGanglie ||
-    state.pendingCollateral ||
-    state.pendingDuel
-  ) {
+  if (hasBlockingPendingDecision(state)) {
     return;
   }
 
@@ -222,6 +225,9 @@ export function stepPhase(state: GameState): void {
     tryTriggerLuoshen(state, current);
     tryTriggerGuanxing(state, current);
     resolveJudgePhase(state, current.id);
+    if (state.pendingGuicai) {
+      return;
+    }
     state.phase = "draw";
     pushEvent(state, "phase", `${current.name} 进入摸牌阶段`);
     return;
@@ -248,12 +254,21 @@ export function stepPhase(state: GameState): void {
   }
 
   if (state.phase === "discard") {
+    const kejiActive = hasSkill(state, current.id, STANDARD_SKILL_IDS.lvmengKeji) && state.slashPlayedInTurn === 0;
+    if (kejiActive) {
+      resolveDiscardIfNeeded(state, current.id);
+      state.phase = "end";
+      pushEvent(state, "phase", `${current.name} 进入结束阶段`);
+      return;
+    }
+
     const requiresManualDiscard = state.manualDiscardByPlayer[current.id] === true && current.hand.length > current.hp;
     if (requiresManualDiscard) {
       return;
     }
 
     resolveDiscardIfNeeded(state, current.id);
+
     state.phase = "end";
     pushEvent(state, "phase", `${current.name} 进入结束阶段`);
     return;
@@ -309,6 +324,10 @@ export function getLegalActions(state: GameState): TurnAction[] {
   }
 
   if (state.pendingMassTrick) {
+    return [];
+  }
+
+  if (hasBlockingPendingDecision(state)) {
     return [];
   }
 
@@ -800,11 +819,8 @@ export function applyAction(state: GameState, action: TurnAction): void {
     state.winner ||
     state.phase !== "play" ||
     state.pendingHarvest ||
-    state.pendingIceSword ||
-    state.pendingAxeStrike ||
-    state.pendingBladeFollowUp ||
-    state.pendingGanglie ||
-    state.pendingDuel
+    state.pendingYiji ||
+    hasBlockingPendingDecision(state)
   ) {
     return;
   }
@@ -885,6 +901,18 @@ export function setManualDiscardMode(state: GameState, playerId: string, enabled
   state.manualDiscardByPlayer[playerId] = enabled;
 }
 
+export function setLiuliPromptMode(state: GameState, playerId: string, enabled: boolean): void {
+  state.liuliPromptModeByPlayer[playerId] = enabled;
+}
+
+export function setGuicaiPromptMode(state: GameState, playerId: string, enabled: boolean): void {
+  state.guicaiPromptModeByPlayer[playerId] = enabled;
+}
+
+export function setManualYijiDistributionMode(state: GameState, playerId: string, enabled: boolean): void {
+  state.manualYijiDistributionByPlayer[playerId] = enabled;
+}
+
 export function setManualHarvestSelectionMode(state: GameState, enabled: boolean): void {
   state.manualHarvestSelectionMode = enabled;
 }
@@ -918,6 +946,223 @@ export function getPendingHarvestChoice(
 
   completePendingHarvest(state);
   return null;
+}
+
+export function getPendingYijiChoice(
+  state: GameState
+): { ownerId: string; cards: Card[]; recipientIds: string[] } | null {
+  const pending = state.pendingYiji;
+  if (!pending) {
+    return null;
+  }
+
+  const owner = getPlayerById(state, pending.ownerId);
+  if (!owner || !owner.alive) {
+    state.pendingYiji = null;
+    return null;
+  }
+
+  return {
+    ownerId: pending.ownerId,
+    cards: [...pending.cards],
+    recipientIds: state.players.filter((player) => player.alive).map((player) => player.id)
+  };
+}
+
+export function getPendingGuicaiChoice(
+  state: GameState
+): { ownerId: string; judgedPlayerId: string; trickKind: "indulgence" | "lightning"; originalJudgeCard: Card; cards: Card[] } | null {
+  const pending = state.pendingGuicai;
+  if (!pending) {
+    return null;
+  }
+
+  const owner = getPlayerById(state, pending.guicaiOwnerId);
+  const judgedPlayer = getPlayerById(state, pending.judgedPlayerId);
+  if (!owner || !judgedPlayer || !owner.alive || !judgedPlayer.alive) {
+    state.pendingGuicai = null;
+    return null;
+  }
+
+  return {
+    ownerId: pending.guicaiOwnerId,
+    judgedPlayerId: pending.judgedPlayerId,
+    trickKind: pending.trickKind,
+    originalJudgeCard: { ...pending.originalJudgeCard },
+    cards: [...owner.hand]
+  };
+}
+
+export function chooseYijiRecipient(state: GameState, cardId: string, recipientId: string): void {
+  const pending = state.pendingYiji;
+  if (!pending) {
+    return;
+  }
+
+  const owner = getPlayerById(state, pending.ownerId);
+  if (!owner || !owner.alive) {
+    state.pendingYiji = null;
+    return;
+  }
+
+  const selectedIndex = pending.cards.findIndex((card) => card.id === cardId);
+  const index = selectedIndex >= 0 ? selectedIndex : 0;
+  const [selected] = pending.cards.splice(index, 1);
+  if (!selected) {
+    return;
+  }
+
+  const recipient = getPlayerById(state, recipientId);
+  const target = recipient && recipient.alive ? recipient : owner;
+  if (target.id === owner.id) {
+    pushEvent(state, "skill", `${owner.name} 发动遗计，保留了 ${selected.id}`);
+  } else {
+    const moved = removeCardFromHand(state, owner, selected.id);
+    if (moved) {
+      target.hand.push(moved);
+      pushEvent(state, "skill", `${owner.name} 发动遗计，将 ${moved.id} 分配给 ${target.name}`);
+    }
+  }
+
+  if (pending.cards.length > 0) {
+    return;
+  }
+
+  pushEvent(state, "skill", `${owner.name} 发动遗计，完成本次受伤后的分配`);
+
+  if (pending.remainingBatchCount > 0) {
+    pending.remainingBatchCount -= 1;
+    const handCountBeforeDraw = owner.hand.length;
+    drawCards(state, owner.id, 2);
+    pending.cards = owner.hand.slice(handCountBeforeDraw);
+    return;
+  }
+
+  const sourceId = pending.sourceId;
+  const damageAmount = pending.damageAmount;
+  const damageCard = pending.damageCard;
+  state.pendingYiji = null;
+
+  if (!sourceId) {
+    return;
+  }
+
+  const source = getPlayerById(state, sourceId);
+  if (!source || !source.alive || !owner.alive) {
+    return;
+  }
+
+  tryTriggerJianxiong(state, source, owner, damageCard);
+  tryTriggerFankui(state, source.id, owner.id, damageAmount);
+  tryTriggerGanglie(state, source.id, owner.id, damageAmount);
+}
+
+export function getPendingLiuliChoice(
+  state: GameState
+): { sourceId: string; targetId: string; slashCardId: string; candidateIds: string[] } | null {
+  const pending = state.pendingLiuli;
+  if (!pending) {
+    return null;
+  }
+
+  const source = getPlayerById(state, pending.sourceId);
+  const target = getPlayerById(state, pending.targetId);
+  if (!source || !target || !source.alive || !target.alive) {
+    state.pendingLiuli = null;
+    return null;
+  }
+
+  const candidateIds = pending.candidateIds.filter((candidateId) => {
+    const candidate = getPlayerById(state, candidateId);
+    return Boolean(candidate && candidate.alive);
+  });
+
+  return {
+    sourceId: pending.sourceId,
+    targetId: pending.targetId,
+    slashCardId: pending.slashCard.id,
+    candidateIds
+  };
+}
+
+export function resolvePendingLiuli(state: GameState, redirectTargetId?: string, discardCardId?: string): void {
+  const pending = state.pendingLiuli;
+  if (!pending) {
+    return;
+  }
+
+  state.pendingLiuli = null;
+  const source = getPlayerById(state, pending.sourceId);
+  const target = getPlayerById(state, pending.targetId);
+  if (!source || !target || !source.alive || !target.alive) {
+    if (pending.shouldDiscardSlash) {
+      discardCardUnlessObtainedByJianxiong(state, pending.slashCard);
+    }
+    return;
+  }
+
+  const redirectTarget = redirectTargetId
+    ? pending.candidateIds
+        .map((candidateId) => getPlayerById(state, candidateId))
+        .find((candidate): candidate is PlayerState => Boolean(candidate && candidate.alive && candidate.id === redirectTargetId))
+    : undefined;
+
+  if (redirectTarget) {
+    const discarded = discardCardId ? removeOwnedCardById(state, target, discardCardId) : discardOneCardForLiuli(state, target);
+    if (discarded) {
+      if (!state.discard.some((card) => card.id === discarded.id)) {
+        state.discard.push(discarded);
+      }
+      const targetDecisionQueue = state.responseDecisionQueueByPlayer[target.id];
+      if (targetDecisionQueue?.dodge) {
+        delete targetDecisionQueue.dodge;
+      }
+      const targetChoiceQueue = state.responseCardChoiceQueueByPlayer[target.id];
+      if (targetChoiceQueue?.dodge) {
+        delete targetChoiceQueue.dodge;
+      }
+      pushEvent(state, "skill", `${target.name} 发动流离，弃置 ${discarded.id}，将${pending.slashLabel}转移给 ${redirectTarget.name}`);
+      resolveSlashOnTarget(state, source, redirectTarget, pending.slashCard, pending.slashLabel, pending.shouldDiscardSlash);
+      return;
+    }
+  }
+
+  resolveSlashOnTarget(state, source, target, pending.slashCard, pending.slashLabel, pending.shouldDiscardSlash, false);
+}
+
+export function resolvePendingGuicai(state: GameState, replacementCardId?: string): void {
+  const pending = state.pendingGuicai;
+  if (!pending) {
+    return;
+  }
+
+  state.pendingGuicai = null;
+
+  const judgedPlayer = getPlayerById(state, pending.judgedPlayerId);
+  const owner = getPlayerById(state, pending.guicaiOwnerId);
+  if (!judgedPlayer || !owner || !judgedPlayer.alive || !owner.alive) {
+    finishDelayedTrickJudgment(state, pending, pending.originalJudgeCard);
+    return;
+  }
+
+  let finalJudgeCard = pending.originalJudgeCard;
+  if (replacementCardId) {
+    const replacementIndex = owner.hand.findIndex((card) => card.id === replacementCardId);
+    if (replacementIndex >= 0) {
+      const [replacement] = owner.hand.splice(replacementIndex, 1);
+      if (replacement) {
+        state.discard.push(pending.originalJudgeCard);
+        finalJudgeCard = replacement;
+        pushEvent(
+          state,
+          "skill",
+          `${owner.name} 发动鬼才，将 ${judgedPlayer.name} 的判定牌 ${pending.originalJudgeCard.id}（${getCardSuit(pending.originalJudgeCard)}${getCardPoint(pending.originalJudgeCard)}）替换为 ${replacement.id}（${getCardSuit(replacement)}${getCardPoint(replacement)}）`
+        );
+      }
+    }
+  }
+
+  finishDelayedTrickJudgment(state, pending, finalJudgeCard);
 }
 
 export function getPendingMassTrickAction(state: GameState): PlayCardAction | null {
@@ -1590,6 +1835,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
     }
 
     state.slashUsedInTurn += 1;
+    state.slashPlayedInTurn += 1;
     state.latestPlayedCard = provided;
     pushEvent(state, "card", `${actor.name} 发动激将，对 ${target.name} 使用杀`);
     const slashTargets = getSlashTargetsForResolution(state, actor, target, action);
@@ -1680,6 +1926,7 @@ function applyPlayCard(state: GameState, action: PlayCardAction): void {
     }
 
     state.slashUsedInTurn += 1;
+    state.slashPlayedInTurn += 1;
 
     state.latestPlayedCard = card;
     pushEvent(state, "card", `${actor.name} 对 ${target.name} 使用杀`);
@@ -2023,7 +2270,8 @@ function resolveSlashOnTarget(
   target: PlayerState,
   slashCard: Card,
   slashLabel = "杀",
-  shouldDiscardSlash = true
+  shouldDiscardSlash = true,
+  allowLiuli = true
 ): void {
   if (!source.alive || !target.alive) {
     if (shouldDiscardSlash) {
@@ -2032,7 +2280,7 @@ function resolveSlashOnTarget(
     return;
   }
 
-  const redirected = tryApplyLiuliRedirection(state, source, target, slashCard, slashLabel, shouldDiscardSlash);
+  const redirected = allowLiuli ? tryApplyLiuliRedirection(state, source, target, slashCard, slashLabel, shouldDiscardSlash) : false;
   if (redirected) {
     return;
   }
@@ -2192,6 +2440,18 @@ function tryApplyLiuliRedirection(
 
   if (candidates.length === 0) {
     return false;
+  }
+
+  if (state.liuliPromptModeByPlayer[target.id] === true && !target.isAi) {
+    state.pendingLiuli = {
+      sourceId: source.id,
+      targetId: target.id,
+      slashCard,
+      slashLabel,
+      shouldDiscardSlash,
+      candidateIds: candidates.map((candidate) => candidate.id)
+    };
+    return true;
   }
 
   const discarded = discardOneCardForLiuli(state, target);
@@ -2957,7 +3217,14 @@ function resolveJudgePhase(state: GameState, playerId: string): void {
   const queue = [...player.judgmentZone.delayedTricks];
   player.judgmentZone.delayedTricks = [];
 
-  for (const trick of queue) {
+  resolveDelayedTrickQueue(state, player, queue);
+}
+
+function resolveDelayedTrickQueue(state: GameState, player: PlayerState, queue: Card[]): void {
+  for (let index = 0; index < queue.length; index += 1) {
+    const trick = queue[index] as Card;
+    const remainingDelayedTricks = queue.slice(index + 1);
+
     if (!player.alive || state.winner) {
       state.discard.push(trick);
       continue;
@@ -2975,37 +3242,125 @@ function resolveJudgePhase(state: GameState, playerId: string): void {
       continue;
     }
 
-    const judgeCard = drawJudgmentCard(state, player, { reason: "delayed-trick", trickKind: trick.kind });
+    const judgeCard = drawJudgmentCardForDelayedTrick(state, player, trick, remainingDelayedTricks);
+    if (state.pendingGuicai) {
+      return;
+    }
+
     if (!judgeCard) {
       state.discard.push(trick);
       continue;
     }
 
-    if (trick.kind === "indulgence") {
-      if (!isHeart(judgeCard)) {
-        state.skipPlayPhaseForCurrentTurn = true;
-        pushEvent(state, "judge", `${player.name} 的乐不思蜀判定失败（非红桃）`);
-      } else {
-        pushEvent(state, "judge", `${player.name} 的乐不思蜀判定成功（红桃）`);
-      }
-      state.discard.push(trick);
+    finishDelayedTrickJudgment(
+      state,
+      {
+        judgedPlayerId: player.id,
+        currentTrickCard: trick,
+        trickKind: trick.kind as "indulgence" | "lightning",
+        remainingDelayedTricks
+      },
+      judgeCard,
+      false
+    );
+
+    if (state.pendingGuicai) {
+      return;
+    }
+  }
+}
+
+function drawJudgmentCardForDelayedTrick(
+  state: GameState,
+  player: PlayerState,
+  trick: Card,
+  remainingDelayedTricks: Card[]
+): Card | undefined {
+  if (state.deck.length === 0) {
+    refillDeckFromDiscard(state);
+  }
+
+  const drawnCard = state.deck.shift();
+  if (!drawnCard) {
+    return undefined;
+  }
+
+  const responders = getAlivePlayersFrom(state, player.id);
+  for (const responder of responders) {
+    if (!hasSkill(state, responder.id, STANDARD_SKILL_IDS.simayiGuicai) || responder.hand.length === 0) {
       continue;
     }
 
-    if (trick.kind === "lightning") {
-      if (isSpade(judgeCard) && isPointBetween(judgeCard, 2, 9)) {
-        pushEvent(state, "judge", `${player.name} 的闪电判定命中（黑桃2~9）`);
-        state.discard.push(trick);
-        dealDamageWithoutSource(state, player.id, 3, "闪电");
-        continue;
-      }
+    const manualPromptEnabled = responder.isAi === false && state.guicaiPromptModeByPlayer[responder.id] === true;
+    if (manualPromptEnabled) {
+      state.pendingGuicai = {
+        judgedPlayerId: player.id,
+        guicaiOwnerId: responder.id,
+        originalJudgeCard: drawnCard,
+        currentTrickCard: trick,
+        trickKind: trick.kind as "indulgence" | "lightning",
+        remainingDelayedTricks: [...remainingDelayedTricks]
+      };
+      return undefined;
+    }
 
-      pushEvent(state, "judge", `${player.name} 的闪电判定未命中，闪电传递`);
-      transferLightning(state, player.id, trick);
+    const replacementCardIndex = selectGuicaiReplacementCardIndex(state, responder, player, drawnCard, {
+      reason: "delayed-trick",
+      trickKind: trick.kind as "indulgence" | "lightning"
+    });
+    if (replacementCardIndex < 0) {
       continue;
     }
 
-    state.discard.push(trick);
+    const replacement = responder.hand.splice(replacementCardIndex, 1)[0] as Card;
+    state.discard.push(drawnCard);
+    pushEvent(
+      state,
+      "skill",
+      `${responder.name} 发动鬼才，将 ${player.name} 的判定牌 ${drawnCard.id}（${getCardSuit(drawnCard)}${getCardPoint(drawnCard)}）替换为 ${replacement.id}（${getCardSuit(replacement)}${getCardPoint(replacement)}）`
+    );
+    return replacement;
+  }
+
+  return drawnCard;
+}
+
+function finishDelayedTrickJudgment(
+  state: GameState,
+  pending: { judgedPlayerId: string; currentTrickCard: Card; trickKind: "indulgence" | "lightning"; remainingDelayedTricks: Card[] },
+  judgeCard: Card,
+  continueQueue = true
+): void {
+  const judgedPlayer = getPlayerById(state, pending.judgedPlayerId);
+  if (!judgedPlayer || !judgedPlayer.alive) {
+    state.discard.push(judgeCard);
+    state.discard.push(pending.currentTrickCard);
+    return;
+  }
+
+  pushEvent(state, "judge", `${judgedPlayer.name} 判定牌：${judgeCard.id}（${getCardSuit(judgeCard)}${getCardPoint(judgeCard)}）`);
+  state.discard.push(judgeCard);
+  tryTriggerTiandu(state, judgedPlayer, judgeCard.id);
+
+  if (pending.trickKind === "indulgence") {
+    if (!isHeart(judgeCard)) {
+      state.skipPlayPhaseForCurrentTurn = true;
+      pushEvent(state, "judge", `${judgedPlayer.name} 的乐不思蜀判定失败（非红桃）`);
+    } else {
+      pushEvent(state, "judge", `${judgedPlayer.name} 的乐不思蜀判定成功（红桃）`);
+    }
+    state.discard.push(pending.currentTrickCard);
+  } else if (isSpade(judgeCard) && isPointBetween(judgeCard, 2, 9)) {
+    pushEvent(state, "judge", `${judgedPlayer.name} 的闪电判定命中（黑桃2~9）`);
+    state.discard.push(pending.currentTrickCard);
+    dealDamageWithoutSource(state, judgedPlayer.id, 3, "闪电");
+  } else {
+    pushEvent(state, "judge", `${judgedPlayer.name} 的闪电判定未命中，闪电传递`);
+    transferLightning(state, judgedPlayer.id, pending.currentTrickCard);
+  }
+
+  if (continueQueue && !state.pendingGuicai && judgedPlayer.alive && !state.winner && pending.remainingDelayedTricks.length > 0) {
+    resolveDelayedTrickQueue(state, judgedPlayer, pending.remainingDelayedTricks);
   }
 }
 
@@ -3434,7 +3789,11 @@ function dealDamage(state: GameState, sourceId: string, targetId: string, amount
       return;
     }
 
-    tryTriggerYiji(state, target.id, amount);
+    const yijiDeferred = tryTriggerYiji(state, target.id, amount, source.id, damageCard);
+    if (yijiDeferred) {
+      return;
+    }
+
     tryTriggerJianxiong(state, source, target, damageCard);
     tryTriggerFankui(state, source.id, target.id, amount);
     tryTriggerGanglie(state, source.id, target.id, amount);
@@ -3472,10 +3831,31 @@ function dealDamageWithoutSource(state: GameState, targetId: string, amount: num
   }
 }
 
-function tryTriggerYiji(state: GameState, targetId: string, damageAmount: number): void {
+function tryTriggerYiji(
+  state: GameState,
+  targetId: string,
+  damageAmount: number,
+  sourceId: string | null = null,
+  damageCard?: Card
+): boolean {
   const target = requireAlivePlayer(state, targetId);
   if (!hasSkill(state, target.id, STANDARD_SKILL_IDS.guojiaYiji)) {
-    return;
+    return false;
+  }
+
+  const manualMode = state.manualYijiDistributionByPlayer[target.id] === true && !target.isAi;
+  if (manualMode) {
+    const handCountBeforeDraw = target.hand.length;
+    drawCards(state, target.id, 2);
+    state.pendingYiji = {
+      ownerId: target.id,
+      cards: target.hand.slice(handCountBeforeDraw),
+      remainingBatchCount: Math.max(0, damageAmount - 1),
+      sourceId,
+      damageAmount,
+      damageCard
+    };
+    return true;
   }
 
   for (let index = 0; index < damageAmount; index += 1) {
@@ -3486,6 +3866,8 @@ function tryTriggerYiji(state: GameState, targetId: string, damageAmount: number
     distributeYijiCards(state, target, drawnCards);
     pushEvent(state, "skill", `${target.name} 发动遗计，完成本次受伤后的分配`);
   }
+
+  return false;
 }
 
 function tryTriggerJianxiong(state: GameState, source: PlayerState, target: PlayerState, damageCard?: Card): void {
@@ -4651,12 +5033,105 @@ function isKnownAllyForAutoDecision(state: GameState, observer: PlayerState, can
     return observer.identity === "lord" || observer.identity === "loyalist";
   }
 
+  if (observer.identity !== "renegade") {
+    const observerCamp = getAutoDecisionCamp(observer.identity);
+    const inferredCamp = inferAutoDecisionCampByPlayerId(state, observer)[candidate.id] ?? "unknown";
+    if (inferredCamp !== "unknown") {
+      return inferredCamp === observerCamp;
+    }
+  }
+
   const relationScore = inferPublicRelationScoreFromEvents(state.events, observer, candidate);
   if (relationScore <= -2) {
     return true;
   }
 
   return false;
+}
+
+function inferAutoDecisionCampByPlayerId(
+  state: GameState,
+  observer: PlayerState
+): Record<string, "lord-side" | "rebel-side" | "unknown"> {
+  const inferredCampByPlayerId: Record<string, "lord-side" | "rebel-side" | "unknown"> = {};
+  for (const player of state.players) {
+    inferredCampByPlayerId[player.id] = "unknown";
+  }
+
+  const lord = state.players.find((player) => player.identity === "lord");
+  if (lord) {
+    inferredCampByPlayerId[lord.id] = "lord-side";
+  }
+
+  for (const player of state.players) {
+    if (!player.alive) {
+      const camp = getAutoDecisionCamp(player.identity);
+      inferredCampByPlayerId[player.id] = camp === "renegade" ? "unknown" : camp;
+    }
+  }
+
+  const patterns = buildPublicEventPatterns(state.players.map((player) => player.name));
+  if (!patterns) {
+    return inferredCampByPlayerId;
+  }
+
+  for (const event of state.events) {
+    const interaction = extractPublicInteractionMatch(event.message, patterns);
+    if (!interaction) {
+      continue;
+    }
+
+    const source = state.players.find((player) => player.name === interaction.sourceName);
+    const target = state.players.find((player) => player.name === interaction.targetName);
+    if (!source || !target) {
+      continue;
+    }
+
+    if (target.identity === "lord") {
+      inferredCampByPlayerId[source.id] = interaction.kind === "hostile" || interaction.kind === "damage" ? "rebel-side" : "lord-side";
+      continue;
+    }
+
+    if (target.alive) {
+      continue;
+    }
+
+    const targetCamp = getAutoDecisionCamp(target.identity);
+    if (targetCamp === "renegade") {
+      continue;
+    }
+
+    if (interaction.kind === "hostile" || interaction.kind === "damage") {
+      inferredCampByPlayerId[source.id] = targetCamp === "lord-side" ? "rebel-side" : "lord-side";
+      continue;
+    }
+
+    if (interaction.kind === "rescue" || interaction.kind === "heal") {
+      inferredCampByPlayerId[source.id] = targetCamp;
+    }
+  }
+
+  if (observer.identity === "lord" || observer.identity === "loyalist") {
+    for (const player of state.players) {
+      if (player.alive && player.identity === "lord") {
+        inferredCampByPlayerId[player.id] = "lord-side";
+      }
+    }
+  }
+
+  return inferredCampByPlayerId;
+}
+
+function getAutoDecisionCamp(identity: Identity): "lord-side" | "rebel-side" | "renegade" {
+  if (identity === "lord" || identity === "loyalist") {
+    return "lord-side";
+  }
+
+  if (identity === "rebel") {
+    return "rebel-side";
+  }
+
+  return "renegade";
 }
 
 function hasQueuedAffirmativeResponseDecision(state: GameState, playerId: string, kind: ResponseKind): boolean {
@@ -4720,7 +5195,7 @@ function isSameCamp(left: Identity, right: Identity): boolean {
 function resolveDiscardIfNeeded(state: GameState, playerId: string): void {
   const player = requireAlivePlayer(state, playerId);
 
-  if (hasSkill(state, player.id, STANDARD_SKILL_IDS.lvmengKeji) && state.slashUsedInTurn === 0) {
+  if (hasSkill(state, player.id, STANDARD_SKILL_IDS.lvmengKeji) && state.slashPlayedInTurn === 0) {
     pushEvent(state, "skill", `${player.name} 发动克己，跳过弃牌阶段`);
     return;
   }
@@ -4756,6 +5231,7 @@ function advanceTurn(state: GameState): void {
   state.currentPlayerId = next.id;
   state.phase = "judge";
   state.slashUsedInTurn = 0;
+  state.slashPlayedInTurn = 0;
   state.skipPlayPhaseForCurrentTurn = false;
   state.luoyiActivePlayerId = null;
   state.luoyiChosenInTurnByPlayer = {};
@@ -5009,6 +5485,7 @@ function consumeSlashLikeCard(state: GameState, player: PlayerState, contextName
         const [lowCard] = player.hand.splice(lowIndex, 1);
         state.discard.push(lowCard, highCard);
         pushEvent(state, "equip", `${player.name} 在${contextName}中发动丈八蛇矛，将两张手牌当杀打出`);
+        markSlashPlayedInCurrentTurn(state, player.id);
         return {
           id: `${VIRTUAL_SPEAR_SLASH_CARD_ID}::${lowCard.id},${highCard.id}::rsp-${state.turnCount}-${state.events.length}`,
           kind: "slash",
@@ -5031,11 +5508,13 @@ function consumeSlashLikeCard(state: GameState, player: PlayerState, contextName
         tryTriggerLianyingAfterHandLoss(state, player);
 
         if (consumed.kind === "slash") {
+          markSlashPlayedInCurrentTurn(state, player.id);
           return consumed;
         }
 
         if (hasSkill(state, player.id, STANDARD_SKILL_IDS.zhaoyunLongdan) && consumed.kind === "dodge") {
           pushEvent(state, "skill", `${player.name} 在${contextName}中发动龙胆，将闪当杀打出`);
+          markSlashPlayedInCurrentTurn(state, player.id);
           return {
             ...consumed,
             kind: "slash"
@@ -5043,6 +5522,7 @@ function consumeSlashLikeCard(state: GameState, player: PlayerState, contextName
         }
 
         pushEvent(state, "skill", `${player.name} 在${contextName}中发动武圣，将红色手牌当杀打出`);
+        markSlashPlayedInCurrentTurn(state, player.id);
         return {
           ...consumed,
           kind: "slash"
@@ -5053,12 +5533,14 @@ function consumeSlashLikeCard(state: GameState, player: PlayerState, contextName
 
   const slash = consumeFirstCardByKind(state, player, "slash");
   if (slash) {
+    markSlashPlayedInCurrentTurn(state, player.id);
     return slash;
   }
 
   if (allowJijiang && hasSkill(state, player.id, STANDARD_SKILL_IDS.liubeiJijiang)) {
     const provided = consumeSlashFromJijiangResponders(state, player);
     if (provided) {
+      markSlashPlayedInCurrentTurn(state, player.id);
       return provided;
     }
   }
@@ -5067,6 +5549,7 @@ function consumeSlashLikeCard(state: GameState, player: PlayerState, contextName
     const dodgeAsSlash = consumeFirstCardByKind(state, player, "dodge");
     if (dodgeAsSlash) {
       pushEvent(state, "skill", `${player.name} 在${contextName}中发动龙胆，将闪当杀打出`);
+      markSlashPlayedInCurrentTurn(state, player.id);
       return {
         ...dodgeAsSlash,
         kind: "slash"
@@ -5079,6 +5562,7 @@ function consumeSlashLikeCard(state: GameState, player: PlayerState, contextName
     if (redIndex >= 0) {
       const [converted] = player.hand.splice(redIndex, 1);
       pushEvent(state, "skill", `${player.name} 在${contextName}中发动武圣，将红色手牌当杀打出`);
+      markSlashPlayedInCurrentTurn(state, player.id);
       return {
         ...converted,
         kind: "slash"
@@ -5091,6 +5575,7 @@ function consumeSlashLikeCard(state: GameState, player: PlayerState, contextName
     const subB = player.hand.shift() as Card;
     state.discard.push(subA, subB);
     pushEvent(state, "equip", `${player.name} 在${contextName}中发动丈八蛇矛，将两张手牌当杀打出`);
+    markSlashPlayedInCurrentTurn(state, player.id);
     return {
       id: `${VIRTUAL_SPEAR_SLASH_CARD_ID}::${subA.id},${subB.id}::rsp-${state.turnCount}-${state.events.length}`,
       kind: "slash",
@@ -5100,6 +5585,12 @@ function consumeSlashLikeCard(state: GameState, player: PlayerState, contextName
   }
 
   return undefined;
+}
+
+function markSlashPlayedInCurrentTurn(state: GameState, playerId: string): void {
+  if (state.currentPlayerId === playerId) {
+    state.slashPlayedInTurn += 1;
+  }
 }
 
 function getJijiangResponders(state: GameState, owner: PlayerState): PlayerState[] {
@@ -5120,6 +5611,10 @@ function getHujiaResponders(state: GameState, owner: PlayerState): PlayerState[]
   return ordered.filter((candidate) => candidate.id !== owner.id && getPlayerKingdom(state, candidate) === "wei");
 }
 
+function canAutoAidLordSkill(state: GameState, owner: PlayerState, responder: PlayerState): boolean {
+  return !responder.isAi || isKnownAllyForAutoDecision(state, responder, owner);
+}
+
 function getPlayerKingdom(state: GameState, player: PlayerState): "wei" | "shu" | "wu" | "qun" | null {
   const skillIds = state.skillSystem.playerSkills[player.id] ?? [];
   const kingdoms = new Set(skillIds.map((skillId) => SKILL_KINGDOM_BY_ID[skillId]).filter(Boolean));
@@ -5133,6 +5628,10 @@ function getPlayerKingdom(state: GameState, player: PlayerState): "wei" | "shu" 
 function consumeSlashFromJijiangResponders(state: GameState, owner: PlayerState): Card | undefined {
   const responders = getJijiangResponders(state, owner);
   for (const responder of responders) {
+    if (!canAutoAidLordSkill(state, owner, responder)) {
+      continue;
+    }
+
     if (!allowsResponse(state, responder.id, "jijiang")) {
       continue;
     }
@@ -5150,7 +5649,12 @@ function consumeSlashFromJijiangResponders(state: GameState, owner: PlayerState)
 }
 
 function canTriggerActiveJijiang(state: GameState, owner: PlayerState): boolean {
-  return getJijiangResponders(state, owner).length > 0;
+  return getJijiangResponders(state, owner).some(
+    (responder) =>
+      canAutoAidLordSkill(state, owner, responder) &&
+      allowsResponseWithoutConsuming(state, responder.id, "jijiang") &&
+      canProvideSlashLikeForJijiangResponder(state, responder)
+  );
 }
 
 function canProvideSlashLikeForJijiangResponder(state: GameState, player: PlayerState): boolean {
@@ -5180,7 +5684,14 @@ function canProvideSlashLike(state: GameState, player: PlayerState, allowJijiang
 
   if (allowJijiang && hasSkill(state, player.id, STANDARD_SKILL_IDS.liubeiJijiang)) {
     const responders = getJijiangResponders(state, player);
-    if (responders.some((responder) => canProvideSlashLike(state, responder, false))) {
+    if (
+      responders.some(
+        (responder) =>
+          canAutoAidLordSkill(state, player, responder) &&
+          allowsResponseWithoutConsuming(state, responder.id, "jijiang") &&
+          canProvideSlashLike(state, responder, false)
+      )
+    ) {
       return true;
     }
   }
@@ -5211,7 +5722,14 @@ function canProvideDodgeLike(state: GameState, player: PlayerState, allowHujia: 
 
   if (allowHujia && hasSkill(state, player.id, STANDARD_SKILL_IDS.caocaoHujia) && player.identity === "lord") {
     const responders = getHujiaResponders(state, player);
-    if (responders.some((responder) => canProvideDodgeLike(state, responder, false))) {
+    if (
+      responders.some(
+        (responder) =>
+          canAutoAidLordSkill(state, player, responder) &&
+          allowsResponseWithoutConsuming(state, responder.id, "hujia") &&
+          canProvideDodgeLike(state, responder, false)
+      )
+    ) {
       return true;
     }
   }
@@ -5335,6 +5853,10 @@ function consumeDodgeLikeCard(state: GameState, player: PlayerState, contextName
   if (hasSkill(state, player.id, STANDARD_SKILL_IDS.caocaoHujia) && player.identity === "lord") {
     const responders = getHujiaResponders(state, player);
     for (const responder of responders) {
+      if (!canAutoAidLordSkill(state, player, responder)) {
+        continue;
+      }
+
       if (!allowsResponse(state, responder.id, "hujia")) {
         continue;
       }
@@ -5519,6 +6041,21 @@ function getDelayedTrickName(kind: Extract<CardKind, "indulgence" | "lightning">
  */
 function hasDelayedTrick(player: PlayerState, kind: Extract<CardKind, "indulgence" | "lightning">): boolean {
   return player.judgmentZone.delayedTricks.some((card) => card.kind === kind);
+}
+
+function hasBlockingPendingDecision(state: GameState): boolean {
+  return Boolean(
+    state.pendingLiuli ||
+    state.pendingGuicai ||
+    state.pendingYiji ||
+    state.pendingIceSword ||
+      state.pendingAxeStrike ||
+      state.pendingBladeFollowUp ||
+      state.pendingFankui ||
+      state.pendingGanglie ||
+      state.pendingCollateral ||
+      state.pendingDuel
+  );
 }
 
 /**

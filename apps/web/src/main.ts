@@ -8,12 +8,16 @@ import {
   canRespondWithPeach,
   canRespondWithSlash,
   chooseHarvestCard,
+  chooseYijiRecipient,
   chooseAiAction,
   createInitialGame,
   createAiDecisionContext,
   discardSelectedCards,
+  getPendingGuicaiChoice,
   getPendingMassTrickAction,
   getPendingHarvestChoice,
+  getPendingLiuliChoice,
+  getPendingYijiChoice,
   getPlayerKingdomById,
   getLegalActions,
   prepareEightDiagramJudge,
@@ -24,13 +28,17 @@ import {
   resolvePendingAxeStrike,
   resolvePendingFankui,
   resolvePendingGanglie,
+  resolvePendingGuicai,
+  resolvePendingLiuli,
   resolvePendingCollateral,
   resolvePendingIceSword,
   setBladeFollowUpPromptMode,
   setAxeStrikePromptMode,
   setFankuiPromptMode,
+  setGuicaiPromptMode,
   setCollateralPromptMode,
   setIceSwordPromptMode,
+  setLiuliPromptMode,
   setDuelPromptMode,
   setPeachRescuePromptMode,
   setHalberdManualTargetMode,
@@ -40,6 +48,7 @@ import {
   setResponsePreference,
   setLuoyiChoice,
   setTuxiTargets,
+  setManualYijiDistributionMode,
   stepPhase,
   type Card,
   type GameState,
@@ -74,6 +83,7 @@ type PendingHumanResponse = {
   action: TurnAction;
   previewCardEventMessage?: string;
   allowRespond?: boolean;
+  continuePendingLiuli?: boolean;
   nullifyTrickKind?:
     | "dismantle"
     | "snatch"
@@ -580,6 +590,9 @@ let selectedSpearResponseCardIds: string[] = [];
 let selectedZhihengCardIds: string[] = [];
 let selectedJieyinCardIds: string[] = [];
 let selectedGanglieDiscardCardIds: string[] = [];
+let selectedYijiCardId: string | null = null;
+let selectedLiuliDiscardCardId: string | null = null;
+let selectedGuicaiCardId: string | null = null;
 
 if (!foundApp) {
   showFatalError(new Error("页面缺少 #app 容器节点"));
@@ -632,12 +645,15 @@ function createGame(seed: number): Game {
     setBladeFollowUpPromptMode(state, human.id, true);
     setAxeStrikePromptMode(state, human.id, true);
     setFankuiPromptMode(state, human.id, true);
+    setGuicaiPromptMode(state, human.id, true);
     setCollateralPromptMode(state, human.id, true);
     setIceSwordPromptMode(state, human.id, true);
+    setLiuliPromptMode(state, human.id, true);
     setDuelPromptMode(state, human.id, true);
     setPeachRescuePromptMode(state, human.id, true);
     setHalberdManualTargetMode(state, human.id, true);
     setManualDiscardMode(state, human.id, true);
+    setManualYijiDistributionMode(state, human.id, true);
     setManualHarvestSelectionMode(state, true);
     setManualMassTrickStepMode(state, true);
   }
@@ -953,6 +969,10 @@ function getPendingManualDiscardChoice(state: Game): { actor: PlayerState; needC
     return null;
   }
 
+  if (hasSkillOnPlayer(state, actor.id, STANDARD_SKILL_IDS.lvmengKeji) && state.slashPlayedInTurn === 0) {
+    return null;
+  }
+
   const needCount = actor.hand.length - actor.hp;
   if (needCount <= 0) {
     return null;
@@ -1164,7 +1184,30 @@ function getFollowupResponseAfterNullify(state: Game, pending: PendingHumanRespo
     };
   }
 
+  const peachFollowup = buildHumanPeachRescuePrompt(state, pending.action);
+  if (peachFollowup) {
+    return peachFollowup;
+  }
+
   return null;
+}
+
+function buildHumanPeachRescuePrompt(state: Game, action: TurnAction): PendingHumanResponse | null {
+  const human = getHumanPlayer(state);
+  const peachPromptMessage = getHumanPeachPromptMessageForAiAction(state, action);
+  if (!peachPromptMessage) {
+    return null;
+  }
+
+  const inferredKind = action.type === "play-card" ? inferActionCardKindForResponse(state, action) : null;
+  const previewCardEventMessage = inferredKind ? buildCardEventPreviewMessage(state, action, inferredKind) : null;
+  return {
+    kind: "peach",
+    message: peachPromptMessage,
+    action,
+    previewCardEventMessage: previewCardEventMessage ?? undefined,
+    allowRespond: canRespondWithPeach(state, human.id)
+  };
 }
 
 function buildCardEventPreviewMessage(state: Game, action: TurnAction, inferredKind: string): string | null {
@@ -1545,6 +1588,15 @@ function render(): void {
   const pendingHarvestChoiceRaw = getPendingHarvestChoice(game);
   const pendingHarvestChoice =
     pendingHarvestChoiceRaw && pendingHarvestChoiceRaw.pickerId === getHumanPlayer(game).id ? pendingHarvestChoiceRaw : null;
+  const pendingLiuliChoiceRaw = getPendingLiuliChoice(game);
+  const pendingLiuliChoice =
+    pendingLiuliChoiceRaw && pendingLiuliChoiceRaw.targetId === getHumanPlayer(game).id ? pendingLiuliChoiceRaw : null;
+  const pendingGuicaiChoiceRaw = getPendingGuicaiChoice(game);
+  const pendingGuicaiChoice =
+    pendingGuicaiChoiceRaw && pendingGuicaiChoiceRaw.ownerId === getHumanPlayer(game).id ? pendingGuicaiChoiceRaw : null;
+  const pendingYijiChoiceRaw = getPendingYijiChoice(game);
+  const pendingYijiChoice =
+    pendingYijiChoiceRaw && pendingYijiChoiceRaw.ownerId === getHumanPlayer(game).id ? pendingYijiChoiceRaw : null;
   const pendingResponse = pendingHumanResponse;
 
   if (pendingResponse?.kind === "axe-strike") {
@@ -1567,6 +1619,37 @@ function render(): void {
   } else {
     selectedTuxiTargetIds = [];
   }
+
+  if (pendingYijiChoice) {
+    const validYijiCardIds = new Set(pendingYijiChoice.cards.map((card: Card) => card.id));
+    if (!selectedYijiCardId || !validYijiCardIds.has(selectedYijiCardId)) {
+      selectedYijiCardId = pendingYijiChoice.cards[0]?.id ?? null;
+    }
+  } else {
+    selectedYijiCardId = null;
+  }
+
+  if (pendingGuicaiChoice) {
+    const validGuicaiCardIds = new Set(pendingGuicaiChoice.cards.map((card: Card) => card.id));
+    if (!selectedGuicaiCardId || !validGuicaiCardIds.has(selectedGuicaiCardId)) {
+      selectedGuicaiCardId = pendingGuicaiChoice.cards[0]?.id ?? null;
+    }
+  } else {
+    selectedGuicaiCardId = null;
+  }
+
+  if (pendingLiuliChoice) {
+    const liuliSelectableCardIds = new Set([
+      ...getHumanPlayer(game).hand.map((card) => card.id),
+      ...getPlayerEquipmentCards(getHumanPlayer(game)).map((card) => card.id)
+    ]);
+    if (!selectedLiuliDiscardCardId || !liuliSelectableCardIds.has(selectedLiuliDiscardCardId)) {
+      selectedLiuliDiscardCardId = getHumanPlayer(game).hand[0]?.id ?? getPlayerEquipmentCards(getHumanPlayer(game))[0]?.id ?? null;
+    }
+  } else {
+    selectedLiuliDiscardCardId = null;
+  }
+
   const allLegalActions =
     !game.winner && actor && !actor.isAi && game.phase === "play"
       ? getLegalActions(game).filter((action) => action.actorId === actor.id)
@@ -1763,7 +1846,7 @@ function render(): void {
               <div class="center-log-title">事件日志</div>
               <ol class="log-list">${renderEvents(game, pendingResponse?.previewCardEventMessage)}</ol>
             </section>
-            ${renderLatestPlayedCardPanel(game, pendingHarvestChoice)}
+            ${renderLatestPlayedCardPanel(game, pendingHarvestChoice, pendingYijiChoice, pendingLiuliChoice, pendingGuicaiChoice)}
           </section>
         </div>
       </section>
@@ -1795,6 +1878,7 @@ function render(): void {
                 <div class="hand-list">${renderHand(humanHand, legalActions, selectedCardId)}</div>
               </div>
               <aside class="self-side-status">
+                <div class="self-skill-toolbar">${renderSelfSkillToolbar(game, allLegalActions, activeSkillModeId)}</div>
                 <div class="hand-actions">
                   ${renderSkillToolbar(game, allLegalActions, activeSkillModeId)}
                   ${endPlayAction ? '<button data-role="end-play-inline">结束出牌阶段</button>' : ""}
@@ -1819,12 +1903,16 @@ function render(): void {
   bindHandButtons(legalActions);
   bindSkillEquipmentButtons();
   bindZhihengButtons();
+  bindJieyinButtons();
   bindPlayerTargetButtons(selectedCardActions);
   bindZoneChoiceButtons();
   bindZoneCardChoiceButtons();
   bindInlineEndPlayButton(endPlayAction);
   bindManualDiscardButtons();
   bindHarvestChoiceButtons();
+  bindYijiChoiceButtons();
+  bindLiuliChoiceButtons();
+  bindGuicaiChoiceButtons();
   adjustSkillPopoverDirectionByViewport();
   scrollEventLogToLatest();
 }
@@ -2595,6 +2683,9 @@ function renderJieyinConfirmPanel(): string {
   const selectedCount = selectedJieyinCardIds.length;
   return `
     <div class="status">结姻：请选择 2 张手牌作为代价（已选 ${selectedCount}/2），再点击目标发动。</div>
+    <div class="response-actions">
+      <button data-role="jieyin-cancel">取消结姻</button>
+    </div>
   `;
 }
 
@@ -2673,10 +2764,25 @@ function renderMiddleResponseStrip(
 
 function renderLatestPlayedCardPanel(
   state: Game,
-  pendingHarvestChoice: ReturnType<typeof getPendingHarvestChoice> | null = null
+  pendingHarvestChoice: ReturnType<typeof getPendingHarvestChoice> | null = null,
+  pendingYijiChoice: ReturnType<typeof getPendingYijiChoice> | null = null,
+  pendingLiuliChoice: ReturnType<typeof getPendingLiuliChoice> | null = null,
+  pendingGuicaiChoice: ReturnType<typeof getPendingGuicaiChoice> | null = null
 ): string {
   if (pendingHarvestChoice) {
     return renderHarvestChoiceInLatestPanel(state, pendingHarvestChoice);
+  }
+
+  if (pendingGuicaiChoice) {
+    return renderGuicaiChoiceInLatestPanel(state, pendingGuicaiChoice);
+  }
+
+  if (pendingLiuliChoice) {
+    return renderLiuliChoiceInLatestPanel(state, pendingLiuliChoice);
+  }
+
+  if (pendingYijiChoice) {
+    return renderYijiChoiceInLatestPanel(state, pendingYijiChoice);
   }
 
   const latestCard = state.latestPlayedCard;
@@ -2717,9 +2823,43 @@ function renderLatestPlayedCardPanel(
   `;
 }
 
+function renderGuicaiChoiceInLatestPanel(
+  state: Game,
+  pendingGuicaiChoice: NonNullable<ReturnType<typeof getPendingGuicaiChoice>>
+): string {
+  const owner = state.players.find((player) => player.id === pendingGuicaiChoice.ownerId);
+  const judgedPlayer = state.players.find((player) => player.id === pendingGuicaiChoice.judgedPlayerId);
+  const selectedCard = pendingGuicaiChoice.cards.find((card: Card) => card.id === selectedGuicaiCardId) ?? null;
+  const cardButtons = pendingGuicaiChoice.cards
+    .map(
+      (card: Card) =>
+        `<button class="harvest-choice-card${selectedCard?.id === card.id ? " selected" : ""}" data-role="guicai-card" data-card-id="${card.id}" title="${getCardKindLabelZh(card.kind)}">
+          ${renderCardCornerMarks(card)}
+          <img class="card-icon" src="${ASSET_BASE}/cards/${card.kind}.png" alt="${getCardKindLabelZh(card.kind)}" />
+        </button>`
+    )
+    .join("");
+  const originalJudgeLabel = `${getCardKindLabelZh(pendingGuicaiChoice.originalJudgeCard.kind)} ${getCardPointLabel(pendingGuicaiChoice.originalJudgeCard.point ?? 0)}${getCardSuitSymbol(
+    pendingGuicaiChoice.originalJudgeCard.suit
+  )}`;
+
+  return `
+    <section class="center-latest latest-harvest">
+      <div class="center-log-title">鬼才</div>
+      <div class="latest-harvest-info status">${owner?.name ?? "判定响应者"} 可对 ${judgedPlayer?.name ?? "目标角色"} 的${CARD_KIND_LABEL_ZH[pendingGuicaiChoice.trickKind]}判定发动【鬼才】。</div>
+      <div class="latest-harvest-info status">当前判定牌：${escapeHtml(originalJudgeLabel)}</div>
+      <div class="harvest-choice-grid">${cardButtons}</div>
+      <div class="response-actions">
+        <button data-role="guicai-confirm" ${selectedCard ? "" : "disabled"}>用所选牌替换</button>
+        <button data-role="guicai-decline">不发动鬼才</button>
+      </div>
+    </section>
+  `;
+}
+
 function renderHarvestChoiceInLatestPanel(
   state: Game,
-  pendingHarvestChoice: ReturnType<typeof getPendingHarvestChoice>
+  pendingHarvestChoice: NonNullable<ReturnType<typeof getPendingHarvestChoice>>
 ): string {
   const picker = state.players.find((player) => player.id === pendingHarvestChoice.pickerId);
   const pickerName = picker?.name ?? pendingHarvestChoice.pickerId;
@@ -2738,6 +2878,86 @@ function renderHarvestChoiceInLatestPanel(
       <div class="center-log-title">五谷丰登</div>
       <div class="latest-harvest-info status">当前由 ${pickerName} 选牌（剩余 ${pendingHarvestChoice.revealed.length} 张）</div>
       <div class="harvest-choice-grid">${buttons}</div>
+    </section>
+  `;
+}
+
+function renderYijiChoiceInLatestPanel(
+  state: Game,
+  pendingYijiChoice: NonNullable<ReturnType<typeof getPendingYijiChoice>>
+): string {
+  const owner = state.players.find((player) => player.id === pendingYijiChoice.ownerId);
+  const ownerName = owner?.name ?? pendingYijiChoice.ownerId;
+  const selectedCard = pendingYijiChoice.cards.find((card: Card) => card.id === selectedYijiCardId) ?? pendingYijiChoice.cards[0] ?? null;
+  const cardButtons = pendingYijiChoice.cards
+    .map(
+      (card: Card) =>
+        `<button class="harvest-choice-card${selectedCard?.id === card.id ? " selected" : ""}" data-role="yiji-card" data-card-id="${card.id}" title="${getCardKindLabelZh(card.kind)}">
+          ${renderCardCornerMarks(card)}
+          <img class="card-icon" src="${ASSET_BASE}/cards/${card.kind}.png" alt="${getCardKindLabelZh(card.kind)}" />
+        </button>`
+    )
+    .join("");
+  const recipientButtons = pendingYijiChoice.recipientIds
+    .map((recipientId: string) => {
+      const recipient = state.players.find((player) => player.id === recipientId);
+      if (!recipient) {
+        return "";
+      }
+
+      const label = recipient.id === pendingYijiChoice.ownerId ? `自己保留（${recipient.name}）` : `交给 ${recipient.name}`;
+      return `<button data-role="yiji-recipient" data-recipient-id="${recipient.id}" ${selectedCard ? "" : "disabled"}>${label}</button>`;
+    })
+    .join("");
+
+  return `
+    <section class="center-latest latest-harvest">
+      <div class="center-log-title">遗计分配</div>
+      <div class="latest-harvest-info status">${ownerName} 受到伤害后发动【遗计】，请先选一张牌，再选择交给谁。</div>
+      <div class="harvest-choice-grid">${cardButtons}</div>
+      <div class="response-actions">${recipientButtons}</div>
+    </section>
+  `;
+}
+
+function renderLiuliChoiceInLatestPanel(
+  state: Game,
+  pendingLiuliChoice: NonNullable<ReturnType<typeof getPendingLiuliChoice>>
+): string {
+  const source = state.players.find((player) => player.id === pendingLiuliChoice.sourceId);
+  const target = state.players.find((player) => player.id === pendingLiuliChoice.targetId);
+  const human = getHumanPlayer(state);
+  const liuliCards = [
+    ...human.hand,
+    ...getPlayerEquipmentCards(human).map((card) => ({ id: card.id, kind: card.kind, suit: card.suit, point: card.point }))
+  ];
+  const cardButtons = liuliCards
+    .map(
+      (card: Card) =>
+        `<button class="harvest-choice-card${selectedLiuliDiscardCardId === card.id ? " selected" : ""}" data-role="liuli-card" data-card-id="${card.id}" title="${getCardKindLabelZh(card.kind)}">
+          ${renderCardCornerMarks(card)}
+          <img class="card-icon" src="${ASSET_BASE}/cards/${card.kind}.png" alt="${getCardKindLabelZh(card.kind)}" />
+        </button>`
+    )
+    .join("");
+  const buttons = pendingLiuliChoice.candidateIds
+    .map((candidateId: string) => {
+      const candidate = state.players.find((player) => player.id === candidateId);
+      if (!candidate) {
+        return "";
+      }
+
+      return `<button data-role="liuli-target" data-target-id="${candidate.id}" ${selectedLiuliDiscardCardId ? "" : "disabled"}>转移给 ${candidate.name}</button>`;
+    })
+    .join("");
+
+  return `
+    <section class="center-latest latest-harvest">
+      <div class="center-log-title">流离</div>
+      <div class="latest-harvest-info status">${target?.name ?? "目标角色"} 受到 ${source?.name ?? "来源角色"} 的【杀】指定，可选择是否发动【流离】。</div>
+      <div class="latest-harvest-info status">先选择要弃置的牌，再选择转移目标。</div>
+      <div class="harvest-choice-grid">${cardButtons}</div>
+      <div class="response-actions">${buttons}<button data-role="liuli-decline">不发动流离</button></div>
     </section>
   `;
 }
@@ -2887,6 +3107,22 @@ function localizeEventMessage(message: string): string {
   for (const [kind, label] of pairs) {
     result = result.split(kind).join(label);
   }
+
+  const suitPairs: Array<[string, string]> = [
+    ["spade", "黑桃"],
+    ["heart", "红桃"],
+    ["club", "梅花"],
+    ["diamond", "方片"]
+  ];
+
+  for (const [source, target] of suitPairs) {
+    result = result.split(source).join(target);
+  }
+
+  result = result.replace(/(黑桃|红桃|梅花|方片)(1[0-3]|[1-9])/g, (_, suit: string, point: string) => {
+    const numericPoint = Number(point);
+    return `${suit}${getCardPointLabel(numericPoint)}`;
+  });
 
   const phasePairs: Array<[string, string]> = [
     ["judge", "判定"],
@@ -3317,7 +3553,27 @@ function bindHumanResponseButtons(): void {
         setResponsePreference(game, human.id, current.kind, false);
       }
 
+      if (current.continuePendingLiuli) {
+        resolvePendingLiuli(game);
+        clearResponseDecisionState(game);
+        runAutoUntilHumanChoice();
+        render();
+        ensureAutoLoop();
+        return;
+      }
+
+      if (!enabled && current.kind !== "peach") {
+        const peachFollowup = buildHumanPeachRescuePrompt(game, current.action);
+        if (peachFollowup) {
+          pendingHumanResponse = peachFollowup;
+          render();
+          ensureAutoLoop();
+          return;
+        }
+      }
+
       applyAction(game, current.action);
+      clearResponseDecisionState(game);
       runAutoUntilHumanChoice();
       render();
       ensureAutoLoop();
@@ -3355,7 +3611,12 @@ function bindHumanResponseButtons(): void {
       queueResponseCardChoice(game, human.id, "dodge", cardId);
 
       pendingHumanResponse = null;
-      applyAction(game, current.action);
+      if (current.continuePendingLiuli) {
+        resolvePendingLiuli(game);
+      } else {
+        applyAction(game, current.action);
+      }
+      clearResponseDecisionState(game);
       runAutoUntilHumanChoice();
       render();
       ensureAutoLoop();
@@ -3388,6 +3649,7 @@ function bindHumanResponseButtons(): void {
 
     queueResponseDecision(game, human.id, "slash", true);
     applyAction(game, current.action);
+  clearResponseDecisionState(game);
     runAutoUntilHumanChoice();
     render();
     ensureAutoLoop();
@@ -3840,6 +4102,26 @@ function bindZhihengButtons(): void {
   });
 }
 
+function bindJieyinButtons(): void {
+  const cancelButton = app.querySelector<HTMLButtonElement>("button[data-role='jieyin-cancel']");
+  cancelButton?.addEventListener("click", () => {
+    if (activeSkillModeId !== "jieyin") {
+      return;
+    }
+
+    activeSkillModeId = null;
+    selectedJieyinCardIds = [];
+    previewTargetIds = [];
+    selectedCardId = null;
+    pendingPrimaryTargetId = null;
+    pendingSecondaryTargetId = null;
+    pendingZoneChoiceActions = [];
+    pendingZoneCardChoiceActions = [];
+    render();
+    ensureAutoLoop();
+  });
+}
+
 function inferActionCardKindForResponse(state: Game, action: TurnAction): string | null {
   if (action.type !== "play-card") {
     return null;
@@ -3884,7 +4166,11 @@ function inferActionCardKindForResponse(state: Game, action: TurnAction): string
   return resolveActionCardKind(state, action);
 }
 
-function getPendingHumanResponseForAiAction(state: Game, action: TurnAction): PendingHumanResponse | null {
+function getPendingHumanResponseForAiAction(state: Game, action: TurnAction | null | undefined): PendingHumanResponse | null {
+  if (!action) {
+    return null;
+  }
+
   if (action.type !== "play-card") {
     return null;
   }
@@ -4051,14 +4337,11 @@ function getPendingHumanResponseForAiAction(state: Game, action: TurnAction): Pe
     };
   }
 
-  const peachPromptMessage = getHumanPeachPromptMessageForAiAction(state, action);
-  if (peachPromptMessage) {
+  const peachPrompt = buildHumanPeachRescuePrompt(state, action);
+  if (peachPrompt) {
     return {
-      kind: "peach",
-      message: peachPromptMessage,
-      action,
-      previewCardEventMessage,
-      allowRespond: canRespondWithPeach(state, human.id)
+      ...peachPrompt,
+      previewCardEventMessage
     };
   }
 
@@ -4681,6 +4964,187 @@ function bindHarvestChoiceButtons(): void {
   });
 }
 
+function bindYijiChoiceButtons(): void {
+  const cardButtons = app.querySelectorAll<HTMLButtonElement>("button[data-role='yiji-card']");
+  cardButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const pending = getPendingYijiChoice(game);
+      const human = getHumanPlayer(game);
+      if (!pending || pending.ownerId !== human.id) {
+        return;
+      }
+
+      const cardId = button.dataset.cardId;
+      if (!cardId) {
+        return;
+      }
+
+      selectedYijiCardId = cardId;
+      render();
+      ensureAutoLoop();
+    });
+  });
+
+  const recipientButtons = app.querySelectorAll<HTMLButtonElement>("button[data-role='yiji-recipient']");
+  recipientButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const pending = getPendingYijiChoice(game);
+      const human = getHumanPlayer(game);
+      if (!pending || pending.ownerId !== human.id) {
+        return;
+      }
+
+      const recipientId = button.dataset.recipientId;
+      const cardId = selectedYijiCardId ?? pending.cards[0]?.id;
+      if (!recipientId || !cardId) {
+        return;
+      }
+
+      chooseYijiRecipient(game, cardId, recipientId);
+      selectedYijiCardId = null;
+      clearResponseDecisionState(game);
+      runAutoUntilHumanChoice();
+      render();
+      ensureAutoLoop();
+    });
+  });
+}
+
+function bindLiuliChoiceButtons(): void {
+  const cardButtons = app.querySelectorAll<HTMLButtonElement>("button[data-role='liuli-card']");
+  cardButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const pending = getPendingLiuliChoice(game);
+      const human = getHumanPlayer(game);
+      if (!pending || pending.targetId !== human.id) {
+        return;
+      }
+
+      const cardId = button.dataset.cardId;
+      if (!cardId) {
+        return;
+      }
+
+      selectedLiuliDiscardCardId = cardId;
+      render();
+      ensureAutoLoop();
+    });
+  });
+
+  const targetButtons = app.querySelectorAll<HTMLButtonElement>("button[data-role='liuli-target']");
+  targetButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const pending = getPendingLiuliChoice(game);
+      const human = getHumanPlayer(game);
+      if (!pending || pending.targetId !== human.id) {
+        return;
+      }
+
+      const targetId = button.dataset.targetId;
+      if (!targetId) {
+        return;
+      }
+
+      resolvePendingLiuli(game, targetId, selectedLiuliDiscardCardId ?? undefined);
+      selectedLiuliDiscardCardId = null;
+      clearResponseDecisionState(game);
+      runAutoUntilHumanChoice();
+      render();
+      ensureAutoLoop();
+    });
+  });
+
+  const declineButton = app.querySelector<HTMLButtonElement>("button[data-role='liuli-decline']");
+  declineButton?.addEventListener("click", () => {
+    const pending = getPendingLiuliChoice(game);
+    const human = getHumanPlayer(game);
+    if (!pending || pending.targetId !== human.id) {
+      return;
+    }
+
+    const syntheticAction: PlayCardAction = {
+      type: "play-card",
+      actorId: pending.sourceId,
+      cardId: pending.slashCardId,
+      targetId: pending.targetId
+    };
+    const dodgePrompt = getPendingHumanResponseForAiAction(game, syntheticAction);
+    if (dodgePrompt?.kind === "dodge") {
+      pendingHumanResponse = {
+        ...dodgePrompt,
+        continuePendingLiuli: true
+      };
+      render();
+      ensureAutoLoop();
+      return;
+    }
+
+    resolvePendingLiuli(game);
+    runAutoUntilHumanChoice();
+    render();
+    ensureAutoLoop();
+  });
+}
+
+function bindGuicaiChoiceButtons(): void {
+  const cardButtons = app.querySelectorAll<HTMLButtonElement>("button[data-role='guicai-card']");
+  cardButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const pending = getPendingGuicaiChoice(game);
+      const human = getHumanPlayer(game);
+      if (!pending || pending.ownerId !== human.id) {
+        return;
+      }
+
+      const cardId = button.dataset.cardId;
+      if (!cardId) {
+        return;
+      }
+
+      selectedGuicaiCardId = cardId;
+      render();
+      ensureAutoLoop();
+    });
+  });
+
+  const confirmButton = app.querySelector<HTMLButtonElement>("button[data-role='guicai-confirm']");
+  confirmButton?.addEventListener("click", () => {
+    const pending = getPendingGuicaiChoice(game);
+    const human = getHumanPlayer(game);
+    if (!pending || pending.ownerId !== human.id) {
+      return;
+    }
+
+    const cardId = selectedGuicaiCardId ?? pending.cards[0]?.id;
+    if (!cardId) {
+      return;
+    }
+
+    resolvePendingGuicai(game, cardId);
+    selectedGuicaiCardId = null;
+    clearResponseDecisionState(game);
+    runAutoUntilHumanChoice();
+    render();
+    ensureAutoLoop();
+  });
+
+  const declineButton = app.querySelector<HTMLButtonElement>("button[data-role='guicai-decline']");
+  declineButton?.addEventListener("click", () => {
+    const pending = getPendingGuicaiChoice(game);
+    const human = getHumanPlayer(game);
+    if (!pending || pending.ownerId !== human.id) {
+      return;
+    }
+
+    resolvePendingGuicai(game);
+    selectedGuicaiCardId = null;
+    clearResponseDecisionState(game);
+    runAutoUntilHumanChoice();
+    render();
+    ensureAutoLoop();
+  });
+}
+
 function getPendingHarvestNullifyResponse(cardId?: string): PendingHumanResponse | null {
   const pendingHarvest = getPendingHarvestChoice(game);
   if (!pendingHarvest) {
@@ -5191,11 +5655,7 @@ function executeHumanChosenAction(action: TurnAction): void {
   }
 
   const inferredKind = inferActionCardKindForResponse(game, action);
-  const shouldSkipPreNullifyPromptForHumanGroupTrick =
-    action.type === "play-card" &&
-    action.actorId === human.id &&
-    !action.targetId &&
-    (inferredKind === "harvest" || inferredKind === "taoyuan" || inferredKind === "barbarian" || inferredKind === "archery");
+  const shouldSkipPreNullifyPromptForHumanGroupTrick = shouldSkipPreNullifyPromptForGroupTrick(action, human.id, inferredKind);
 
   if (!shouldSkipPreNullifyPromptForHumanGroupTrick) {
     const pending = getPendingHumanResponseForAiAction(game, action);
@@ -5307,6 +5767,19 @@ function disableHumanAutoNullifyForAction(state: Game, action: TurnAction): void
   setResponsePreference(state, human.id, "nullify", false);
 }
 
+function shouldSkipPreNullifyPromptForGroupTrick(
+  action: TurnAction,
+  humanId: string,
+  inferredKind: string | null
+): boolean {
+  return (
+    action.type === "play-card" &&
+    action.actorId === humanId &&
+    !action.targetId &&
+    (inferredKind === "harvest" || inferredKind === "taoyuan" || inferredKind === "barbarian" || inferredKind === "archery")
+  );
+}
+
 function bindTargetActionButtons(selectedCardActions: TurnAction[], endPlayAction: TurnAction | null): void {
   const actionButtons = app.querySelectorAll<HTMLButtonElement>("button[data-role='action']");
   actionButtons.forEach((button) => {
@@ -5368,6 +5841,12 @@ function runOneTick(): void {
       return;
     }
 
+    const pendingMassResponse = getPendingHumanResponseForAiAction(game, pendingMassAction);
+    if (pendingMassResponse) {
+      pendingHumanResponse = pendingMassResponse;
+      return;
+    }
+
     disableHumanAutoNullifyForAction(game, pendingMassAction);
     applyAction(game, pendingMassAction);
     clearResponseDecisionState(game);
@@ -5401,7 +5880,14 @@ function runOneTick(): void {
     return;
   }
 
-  if (queuePendingFankuiPrompt() || queuePendingGangliePrompt() || queuePendingCollateralPrompt()) {
+  if (
+    queuePendingFankuiPrompt() ||
+    queuePendingGangliePrompt() ||
+    queuePendingCollateralPrompt() ||
+    queuePendingAxeStrikePrompt() ||
+    queuePendingIceSwordPrompt() ||
+    queuePendingBladeFollowUpPrompt()
+  ) {
     return;
   }
 
@@ -5409,7 +5895,10 @@ function runOneTick(): void {
     getPendingTuxiChoice(game) ||
     isPendingLuoyiChoice(game) ||
     pendingHumanResponse ||
+    getPendingGuicaiChoice(game) ||
+    getPendingLiuliChoice(game) ||
     getPendingManualDiscardChoice(game) ||
+    getPendingYijiChoice(game) ||
     getPendingHarvestChoice(game)
   ) {
     return;
@@ -5434,8 +5923,16 @@ function runOneTick(): void {
     return;
   }
 
-  const action = chooseAiAction(createAiDecisionContext(game, actor.id));
-  const pending = getPendingHumanResponseForAiAction(game, action);
+  const aiContext = createAiDecisionContext(game, actor.id);
+  if (aiContext.legalActions.length === 0) {
+    return;
+  }
+
+  const action = chooseAiAction(aiContext);
+  const inferredKind = inferActionCardKindForResponse(game, action);
+  const pending = shouldSkipPreNullifyPromptForGroupTrick(action, actor.id, inferredKind)
+    ? null
+    : getPendingHumanResponseForAiAction(game, action);
   if (pending) {
     pendingHumanResponse = pending;
     return;
@@ -5467,6 +5964,12 @@ function runAutoUntilHumanChoice(maxTicks = 500): void {
         break;
       }
 
+      const pendingMassResponse = getPendingHumanResponseForAiAction(game, pendingMassAction);
+      if (pendingMassResponse) {
+        pendingHumanResponse = pendingMassResponse;
+        break;
+      }
+
       disableHumanAutoNullifyForAction(game, pendingMassAction);
       applyAction(game, pendingMassAction);
       clearResponseDecisionState(game);
@@ -5488,6 +5991,10 @@ function runAutoUntilHumanChoice(maxTicks = 500): void {
       break;
     }
 
+    if (queuePendingDelayedTrickNullifyPrompt()) {
+      break;
+    }
+
     if (autoChooseHarvestForAiIfNeeded()) {
       ticks += 1;
       continue;
@@ -5497,7 +6004,14 @@ function runAutoUntilHumanChoice(maxTicks = 500): void {
       break;
     }
 
-    if (queuePendingFankuiPrompt() || queuePendingCollateralPrompt()) {
+    if (
+      queuePendingFankuiPrompt() ||
+      queuePendingGangliePrompt() ||
+      queuePendingCollateralPrompt() ||
+      queuePendingAxeStrikePrompt() ||
+      queuePendingIceSwordPrompt() ||
+      queuePendingBladeFollowUpPrompt()
+    ) {
       break;
     }
 
@@ -5505,7 +6019,10 @@ function runAutoUntilHumanChoice(maxTicks = 500): void {
       getPendingTuxiChoice(game) ||
       isPendingLuoyiChoice(game) ||
       pendingHumanResponse ||
+      getPendingGuicaiChoice(game) ||
+      getPendingLiuliChoice(game) ||
       getPendingManualDiscardChoice(game) ||
+      getPendingYijiChoice(game) ||
       getPendingHarvestChoice(game)
     ) {
       break;
@@ -5529,8 +6046,16 @@ function runAutoUntilHumanChoice(maxTicks = 500): void {
       continue;
     }
 
-    const action = chooseAiAction(createAiDecisionContext(game, actor.id));
-    const pending = getPendingHumanResponseForAiAction(game, action);
+    const aiContext = createAiDecisionContext(game, actor.id);
+    if (aiContext.legalActions.length === 0) {
+      break;
+    }
+
+    const action = chooseAiAction(aiContext);
+    const inferredKind = inferActionCardKindForResponse(game, action);
+    const pending = shouldSkipPreNullifyPromptForGroupTrick(action, actor.id, inferredKind)
+      ? null
+      : getPendingHumanResponseForAiAction(game, action);
     if (pending) {
       pendingHumanResponse = pending;
       break;
@@ -5572,7 +6097,16 @@ function ensureAutoLoop(): void {
       !!getPendingTuxiChoice(game) ||
       isPendingLuoyiChoice(game) ||
       !!pendingHumanResponse ||
+      !!getPendingGuicaiChoice(game) ||
+      (() => {
+        const pendingLiuli = getPendingLiuliChoice(game);
+        return !!pendingLiuli && pendingLiuli.targetId === getHumanPlayer(game).id;
+      })() ||
       !!getPendingManualDiscardChoice(game) ||
+      (() => {
+        const pendingYiji = getPendingYijiChoice(game);
+        return !!pendingYiji && pendingYiji.ownerId === getHumanPlayer(game).id;
+      })() ||
       (() => {
         const pendingHarvest = getPendingHarvestChoice(game);
         return !!pendingHarvest && pendingHarvest.pickerId === getHumanPlayer(game).id;
